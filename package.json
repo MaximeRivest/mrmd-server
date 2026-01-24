@@ -1,0 +1,35 @@
+{
+  "name": "mrmd-server",
+  "version": "0.1.0",
+  "description": "HTTP server for mrmd - run mrmd in any browser, access from anywhere",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "mrmd-server": "./bin/cli.js"
+  },
+  "scripts": {
+    "start": "node bin/cli.js",
+    "dev": "node bin/cli.js --dev"
+  },
+  "keywords": [
+    "mrmd",
+    "markdown",
+    "notebook",
+    "server",
+    "remote",
+    "collaboration"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.16.0",
+    "cors": "^2.8.5",
+    "multer": "^1.4.5-lts.1",
+    "chokidar": "^3.6.0",
+    "fzf": "^0.5.2",
+    "mrmd-project": "*"
+  }
+}

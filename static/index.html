@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mrmd</title>
+
+  <!-- Load the HTTP shim BEFORE anything else -->
+  <script src="/http-shim.js"></script>
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .loading {
+      text-align: center;
+    }
+
+    .loading h1 {
+      font-size: 2rem;
+      margin-bottom: 1rem;
+      color: #58a6ff;
+    }
+
+    .loading p {
+      color: #8b949e;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid #30363d;
+      border-top-color: #58a6ff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 1rem auto;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .error {
+      color: #f85149;
+      margin-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="loading" id="loading">
+    <h1>mrmd</h1>
+    <div class="spinner"></div>
+    <p>Connecting to server...</p>
+    <p class="error" id="error" style="display: none;"></p>
+  </div>
+
+  <script>
+    // Validate token and load the full UI
+    async function init() {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get('token');
+
+      if (!token) {
+        showError('No token provided. Add ?token=YOUR_TOKEN to the URL.');
+        return;
+      }
+
+      try {
+        // Validate token
+        const response = await fetch(`/auth/validate?token=${encodeURIComponent(token)}`);
+        const result = await response.json();
+
+        if (!result.valid) {
+          showError('Invalid token. Check your access URL.');
+          return;
+        }
+
+        // Token is valid - load the full UI
+        // We'll redirect to the main app or load it inline
+        loadMainApp();
+
+      } catch (err) {
+        showError(`Connection failed: ${err.message}`);
+      }
+    }
+
+    function showError(message) {
+      document.getElementById('error').textContent = message;
+      document.getElementById('error').style.display = 'block';
+    }
+
+    async function loadMainApp() {
+      // For now, show a simple UI
+      // In the full implementation, this would load the mrmd-electron index.html content
+      // or use an iframe
+
+      document.body.innerHTML = `
+        <div style="padding: 20px; max-width: 800px; margin: 0 auto;">
+          <h1 style="color: #58a6ff; margin-bottom: 20px;">mrmd-server</h1>
+          <p style="margin-bottom: 20px; color: #8b949e;">
+            Server is running. The full UI will be loaded from mrmd-electron.
+          </p>
+
+          <div style="background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px;">
+            <h3 style="margin-bottom: 10px;">Quick Start</h3>
+            <p style="color: #8b949e; margin-bottom: 15px;">
+              To use the full mrmd editor, ensure mrmd-electron is available and the server
+              is configured to serve its index.html.
+            </p>
+
+            <h4 style="margin-top: 20px; margin-bottom: 10px;">API Status</h4>
+            <pre id="status" style="background: #0d1117; padding: 15px; border-radius: 4px; overflow: auto;">Loading...</pre>
+          </div>
+
+          <div style="margin-top: 20px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px;">
+            <h3 style="margin-bottom: 10px;">Test electronAPI</h3>
+            <button onclick="testAPI()" style="background: #238636; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer;">
+              Test API
+            </button>
+            <pre id="test-result" style="background: #0d1117; padding: 15px; border-radius: 4px; overflow: auto; margin-top: 15px; display: none;"></pre>
+          </div>
+        </div>
+      `;
+
+      // Load status
+      try {
+        const homeDir = await window.electronAPI.getHomeDir();
+        const recent = await window.electronAPI.getRecent();
+
+        document.getElementById('status').textContent = JSON.stringify({
+          connected: true,
+          homeDir,
+          recentFiles: recent.files?.length || 0,
+          recentVenvs: recent.venvs?.length || 0,
+        }, null, 2);
+      } catch (err) {
+        document.getElementById('status').textContent = `Error: ${err.message}`;
+      }
+    }
+
+    window.testAPI = async function() {
+      const resultEl = document.getElementById('test-result');
+      resultEl.style.display = 'block';
+      resultEl.textContent = 'Testing...';
+
+      try {
+        const results = {
+          homeDir: await window.electronAPI.getHomeDir(),
+          recent: await window.electronAPI.getRecent(),
+          ai: await window.electronAPI.getAi(),
+        };
+
+        resultEl.textContent = JSON.stringify(results, null, 2);
+      } catch (err) {
+        resultEl.textContent = `Error: ${err.message}`;
+      }
+    };
+
+    init();
+  </script>
+</body>
+</html>
