@@ -109,7 +109,7 @@ async function main() {
   }
 
   // Create and start server
-  const server = createServer({
+  const server = await createServer({
     ...options,
     electronDir,
   });

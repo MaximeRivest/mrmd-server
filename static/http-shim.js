@@ -130,6 +130,12 @@
 
     getAi: () => GET('/api/system/ai'),
 
+    // System info and uv management
+    system: {
+      info: () => GET('/api/system/info'),
+      ensureUv: () => POST('/api/system/ensure-uv', {}),
+    },
+
     // ========================================================================
     // Shell (stubs for browser)
     // ========================================================================
@@ -278,6 +284,52 @@
       restart: (sessionName) => POST(`/api/bash/${encodeURIComponent(sessionName)}/restart`, {}),
 
       forDocument: (documentPath) => POST('/api/bash/for-document', { documentPath }),
+    },
+
+    // ========================================================================
+    // JULIA SESSION SERVICE
+    // ========================================================================
+
+    julia: {
+      list: () => GET('/api/julia'),
+
+      start: (config) => POST('/api/julia', { config }),
+
+      stop: (sessionName) => DELETE(`/api/julia/${encodeURIComponent(sessionName)}`),
+
+      restart: (sessionName) => POST(`/api/julia/${encodeURIComponent(sessionName)}/restart`, {}),
+
+      forDocument: (documentPath) => POST('/api/julia/for-document', { documentPath }),
+
+      isAvailable: () => GET('/api/julia/available').then(r => r.available),
+    },
+
+    // ========================================================================
+    // PTY SESSION SERVICE (for ```term blocks)
+    // ========================================================================
+
+    pty: {
+      list: () => GET('/api/pty'),
+
+      start: (config) => POST('/api/pty', { config }),
+
+      stop: (sessionName) => DELETE(`/api/pty/${encodeURIComponent(sessionName)}`),
+
+      restart: (sessionName) => POST(`/api/pty/${encodeURIComponent(sessionName)}/restart`, {}),
+
+      forDocument: (documentPath) => POST('/api/pty/for-document', { documentPath }),
+    },
+
+    // ========================================================================
+    // NOTEBOOK (JUPYTER) SERVICE
+    // ========================================================================
+
+    notebook: {
+      convert: (ipynbPath) => POST('/api/notebook/convert', { ipynbPath }),
+
+      startSync: (ipynbPath) => POST('/api/notebook/start-sync', { ipynbPath }),
+
+      stopSync: (ipynbPath) => POST('/api/notebook/stop-sync', { ipynbPath }),
     },
 
     // ========================================================================

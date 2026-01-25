@@ -7,6 +7,8 @@ import cors from 'cors';
 import { createServer as createHttpServer } from 'http';
 import { WebSocketServer } from 'ws';
 import path from 'path';
+import fs from 'fs/promises';
+import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 
 import { createAuthMiddleware, generateToken } from './auth.js';
@@ -18,6 +20,9 @@ import { createFileRoutes } from './api/file.js';
 import { createAssetRoutes } from './api/asset.js';
 import { createSystemRoutes } from './api/system.js';
 import { createRuntimeRoutes } from './api/runtime.js';
+import { createJuliaRoutes } from './api/julia.js';
+import { createPtyRoutes } from './api/pty.js';
+import { createNotebookRoutes } from './api/notebook.js';
 import { setupWebSocket } from './websocket.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -37,10 +42,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  */
 
 /**
- * Create the mrmd server
+ * Create the mrmd server (async)
  * @param {ServerConfig} config
  */
-export function createServer(config) {
+export async function createServer(config) {
   const {
     port = 8080,
     host = '0.0.0.0',
@@ -110,27 +115,52 @@ export function createServer(config) {
   app.use('/api/asset', createAssetRoutes(context));
   app.use('/api/system', createSystemRoutes(context));
   app.use('/api/runtime', createRuntimeRoutes(context));
+  app.use('/api/julia', createJuliaRoutes(context));
+  app.use('/api/pty', createPtyRoutes(context));
+  app.use('/api/notebook', createNotebookRoutes(context));
 
   // Serve http-shim.js
   app.get('/http-shim.js', (req, res) => {
     res.sendFile(path.join(__dirname, '../static/http-shim.js'));
   });
 
-  // Serve static files (mrmd-electron's index.html, adapted)
-  if (staticDir) {
-    app.use(express.static(staticDir));
+  // Find mrmd-electron directory for UI assets
+  const electronPath = electronDir || findElectronDir(__dirname);
+
+  if (electronPath) {
+    // Serve mrmd-electron assets (fonts, icons)
+    app.use('/assets', express.static(path.join(electronPath, 'assets')));
+
+    // Serve mrmd-editor dist
+    const editorDistPath = path.join(electronPath, '../mrmd-editor/dist');
+    app.use('/dist', express.static(editorDistPath));
+
+    // Serve transformed index.html at root
+    app.get('/', async (req, res) => {
+      try {
+        const indexPath = path.join(electronPath, 'index.html');
+        let html = await fs.readFile(indexPath, 'utf-8');
+
+        // Transform for browser mode:
+        // 1. Inject http-shim.js as first script in head
+        // 2. Update CSP to allow HTTP connections to this server
+        html = transformIndexHtml(html, host, port);
+
+        res.type('html').send(html);
+      } catch (err) {
+        console.error('[index.html]', err);
+        res.sendFile(path.join(__dirname, '../static/index.html'));
+      }
+    });
+  } else {
+    // Fallback: serve placeholder
+    console.warn('[server] mrmd-electron not found, serving placeholder UI');
+    app.use(express.static(path.join(__dirname, '../static')));
   }
 
-  // Serve mrmd-editor dist
-  const editorDistPath = path.join(__dirname, '../../mrmd-editor/dist');
-  app.use('/dist', express.static(editorDistPath));
-
-  // Serve adapted index.html from mrmd-electron (or custom)
-  if (electronDir) {
-    app.get('/', (req, res) => {
-      // We'll serve a wrapper that loads http-shim.js before index.html content
-      res.sendFile(path.join(__dirname, '../static/index.html'));
-    });
+  // Serve custom static files if provided
+  if (staticDir) {
+    app.use(express.static(staticDir));
   }
 
   // WebSocket for push events
@@ -143,6 +173,7 @@ export function createServer(config) {
     context,
     eventBus,
     token,
+    electronPath,
 
     /**
      * Start the server
@@ -156,6 +187,9 @@ export function createServer(config) {
           console.log('  ' + '─'.repeat(50));
           console.log(`  Server:     ${url}`);
           console.log(`  Project:    ${context.projectDir}`);
+          if (electronPath) {
+            console.log(`  UI:         ${electronPath}`);
+          }
           if (!noAuth) {
             console.log(`  Token:      ${token}`);
             console.log('');
@@ -200,11 +234,64 @@ export function createServer(config) {
 }
 
 /**
+ * Find mrmd-electron directory
+ */
+function findElectronDir(fromDir) {
+  const candidates = [
+    path.join(fromDir, '../../mrmd-electron'),
+    path.join(fromDir, '../../../mrmd-electron'),
+    path.join(process.cwd(), '../mrmd-electron'),
+    path.join(process.cwd(), 'mrmd-electron'),
+    // In npx/installed context, it might be in node_modules
+    path.join(fromDir, '../../node_modules/mrmd-electron'),
+    path.join(process.cwd(), 'node_modules/mrmd-electron'),
+  ];
+
+  for (const candidate of candidates) {
+    const indexPath = path.join(candidate, 'index.html');
+    if (existsSync(indexPath)) {
+      return path.resolve(candidate);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Transform index.html for browser mode
+ * - Inject http-shim.js as first script
+ * - Update CSP to allow HTTP connections
+ */
+function transformIndexHtml(html, host, port) {
+  // 1. Inject http-shim.js right after <head>
+  const shimScript = `
+  <!-- HTTP shim for browser mode (injected by mrmd-server) -->
+  <script src="/http-shim.js"></script>
+`;
+  html = html.replace('<head>', '<head>' + shimScript);
+
+  // 2. Update CSP to allow connections to this server and any host
+  // Replace the strict CSP with a more permissive one for HTTP mode
+  const browserCSP = `default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: ws: wss: http: https:; connect-src 'self' ws: wss: http: https: data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://esm.sh https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com blob: http:; font-src 'self' https://fonts.gstatic.com https://www.openresponses.org data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https:; img-src 'self' data: blob: https: http:; frame-src 'self' blob: data:`;
+
+  html = html.replace(
+    /<meta http-equiv="Content-Security-Policy" content="[^"]*">/,
+    `<meta http-equiv="Content-Security-Policy" content="${browserCSP}">`
+  );
+
+  // 3. Remove Electron-specific CSS (window drag regions)
+  html = html.replace(/-webkit-app-region:\s*drag;/g, '/* -webkit-app-region: drag; */');
+  html = html.replace(/-webkit-app-region:\s*no-drag;/g, '/* -webkit-app-region: no-drag; */');
+
+  return html;
+}
+
+/**
  * Convenience function to create and start server
  * @param {ServerConfig} config
  */
 export async function startServer(config) {
-  const server = createServer(config);
+  const server = await createServer(config);
   await server.start();
   return server;
 }

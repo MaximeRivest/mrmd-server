@@ -8,7 +8,8 @@ import { Router } from 'express';
 import os from 'os';
 import path from 'path';
 import fs from 'fs/promises';
-import { spawn } from 'child_process';
+import { existsSync } from 'fs';
+import { spawn, execSync } from 'child_process';
 
 /**
  * Create system routes
@@ -24,6 +25,105 @@ export function createSystemRoutes(ctx) {
    */
   router.get('/home', (req, res) => {
     res.json({ homeDir: os.homedir() });
+  });
+
+  /**
+   * GET /api/system/info
+   * Get system and app info including uv status
+   * Mirrors: electronAPI.system.info()
+   */
+  router.get('/info', async (req, res) => {
+    try {
+      // Check uv availability
+      let uvInfo = { installed: false };
+      try {
+        const uvVersion = execSync('uv --version', { encoding: 'utf-8' }).trim();
+        const uvPath = execSync('which uv', { encoding: 'utf-8' }).trim();
+        uvInfo = {
+          installed: true,
+          version: uvVersion.replace('uv ', ''),
+          path: uvPath,
+        };
+      } catch {}
+
+      // Get Node.js version
+      const nodeVersion = process.version;
+
+      res.json({
+        appVersion: '0.1.0',
+        platform: os.platform(),
+        arch: os.arch(),
+        nodeVersion,
+        pythonDeps: ['ipython', 'starlette', 'uvicorn', 'sse-starlette'],
+        uv: uvInfo,
+        serverMode: true, // Indicates this is running in server mode, not Electron
+      });
+    } catch (err) {
+      console.error('[system:info]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/system/ensure-uv
+   * Ensure uv is installed (auto-install if missing)
+   * Mirrors: electronAPI.system.ensureUv()
+   */
+  router.post('/ensure-uv', async (req, res) => {
+    try {
+      // Check if uv is already installed
+      try {
+        const uvVersion = execSync('uv --version', { encoding: 'utf-8' }).trim();
+        const uvPath = execSync('which uv', { encoding: 'utf-8' }).trim();
+        return res.json({
+          success: true,
+          path: uvPath,
+          version: uvVersion.replace('uv ', ''),
+          alreadyInstalled: true,
+        });
+      } catch {}
+
+      // Try to install uv using the official installer
+      const installScript = 'curl -LsSf https://astral.sh/uv/install.sh | sh';
+
+      const proc = spawn('sh', ['-c', installScript], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout.on('data', (data) => { stdout += data; });
+      proc.stderr.on('data', (data) => { stderr += data; });
+
+      await new Promise((resolve, reject) => {
+        proc.on('close', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`Install failed with code ${code}: ${stderr}`));
+        });
+      });
+
+      // Verify installation
+      const uvPath = path.join(os.homedir(), '.local', 'bin', 'uv');
+      if (existsSync(uvPath)) {
+        try {
+          const uvVersion = execSync(`${uvPath} --version`, { encoding: 'utf-8' }).trim();
+          return res.json({
+            success: true,
+            path: uvPath,
+            version: uvVersion.replace('uv ', ''),
+          });
+        } catch {}
+      }
+
+      res.json({
+        success: false,
+        error: 'Installation completed but uv not found',
+      });
+    } catch (err) {
+      console.error('[system:ensureUv]', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
   /**
