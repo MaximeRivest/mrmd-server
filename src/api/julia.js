@@ -1,17 +1,56 @@
 /**
  * Julia Session API routes
  *
- * Mirrors electronAPI.julia.*
+ * Mirrors electronAPI.julia.* using JuliaSessionService from mrmd-electron
  */
 
 import { Router } from 'express';
+import { Project } from 'mrmd-project';
 import { spawn } from 'child_process';
+import fs from 'fs';
 import path from 'path';
-import fs from 'fs/promises';
-import net from 'net';
 
-// Session registry: sessionName -> { port, process, cwd }
-const sessions = new Map();
+/**
+ * Detect project from a file path
+ */
+function detectProject(filePath) {
+  const root = Project.findRoot(filePath, (dir) => fs.existsSync(path.join(dir, 'mrmd.md')));
+  if (!root) return null;
+
+  try {
+    const mrmdPath = path.join(root, 'mrmd.md');
+    const content = fs.readFileSync(mrmdPath, 'utf8');
+    const config = Project.parseConfig(content);
+    return { root, config };
+  } catch (e) {
+    return { root, config: {} };
+  }
+}
+
+/**
+ * Check if Julia is available on the system
+ */
+async function isJuliaAvailable() {
+  return new Promise((resolve) => {
+    const proc = spawn('julia', ['--version'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    proc.on('close', (code) => {
+      resolve(code === 0);
+    });
+
+    proc.on('error', () => {
+      resolve(false);
+    });
+
+    // Timeout after 5 seconds
+    setTimeout(() => {
+      proc.kill();
+      resolve(false);
+    }, 5000);
+  });
+}
 
 /**
  * Create Julia routes
@@ -19,6 +58,7 @@ const sessions = new Map();
  */
 export function createJuliaRoutes(ctx) {
   const router = Router();
+  const { juliaSessionService } = ctx;
 
   /**
    * GET /api/julia
@@ -27,15 +67,7 @@ export function createJuliaRoutes(ctx) {
    */
   router.get('/', async (req, res) => {
     try {
-      const list = [];
-      for (const [name, session] of sessions) {
-        list.push({
-          name,
-          port: session.port,
-          cwd: session.cwd,
-          running: session.process && !session.process.killed,
-        });
-      }
+      const list = juliaSessionService.list();
       res.json(list);
     } catch (err) {
       console.error('[julia:list]', err);
@@ -66,9 +98,8 @@ export function createJuliaRoutes(ctx) {
   router.post('/', async (req, res) => {
     try {
       const { config } = req.body;
-      const { name, cwd } = config || {};
 
-      if (!name) {
+      if (!config?.name) {
         return res.status(400).json({ error: 'config.name required' });
       }
 
@@ -77,57 +108,14 @@ export function createJuliaRoutes(ctx) {
         return res.status(503).json({ error: 'Julia is not available on this system' });
       }
 
-      // Check if session already exists
-      if (sessions.has(name)) {
-        const existing = sessions.get(name);
-        if (existing.process && !existing.process.killed) {
-          return res.json({
-            name,
-            port: existing.port,
-            cwd: existing.cwd,
-            reused: true,
-          });
-        }
-      }
-
-      // Find free port
-      const port = await findFreePort(9001, 9100);
-      const workDir = cwd ? path.resolve(ctx.projectDir, cwd) : ctx.projectDir;
-
-      // Start Julia MRP server
-      // Note: This assumes mrmd-julia is installed and provides an MRP-compatible server
-      const proc = spawn('julia', [
-        '-e',
-        `using MrmdJulia; MrmdJulia.serve(${port})`,
-      ], {
-        cwd: workDir,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      // Wait for server to start (with timeout)
-      try {
-        await waitForPort(port, 15000);
-      } catch (err) {
-        proc.kill();
-        return res.status(500).json({ error: `Julia server failed to start: ${err.message}` });
-      }
-
-      sessions.set(name, {
-        port,
-        process: proc,
-        cwd: workDir,
-      });
-
-      proc.on('exit', (code) => {
-        console.log(`[julia] ${name} exited with code ${code}`);
-        sessions.delete(name);
-      });
+      const result = await juliaSessionService.start(config);
 
       res.json({
-        name,
-        port,
-        cwd: workDir,
-        url: `http://localhost:${port}/mrp/v1`,
+        name: result.name,
+        port: result.port,
+        cwd: result.cwd,
+        pid: result.pid,
+        url: `http://localhost:${result.port}/mrp/v1`,
       });
     } catch (err) {
       console.error('[julia:start]', err);
@@ -143,21 +131,11 @@ export function createJuliaRoutes(ctx) {
   router.delete('/:name', async (req, res) => {
     try {
       const { name } = req.params;
-      const session = sessions.get(name);
-
-      if (!session) {
-        return res.json({ success: true, message: 'Session not found' });
-      }
-
-      if (session.process && !session.process.killed) {
-        session.process.kill();
-      }
-
-      sessions.delete(name);
+      await juliaSessionService.stop(name);
       res.json({ success: true });
     } catch (err) {
       console.error('[julia:stop]', err);
-      res.status(500).json({ error: err.message });
+      res.json({ success: true, message: err.message });
     }
   });
 
@@ -169,26 +147,15 @@ export function createJuliaRoutes(ctx) {
   router.post('/:name/restart', async (req, res) => {
     try {
       const { name } = req.params;
-      const session = sessions.get(name);
+      const result = await juliaSessionService.restart(name);
 
-      if (!session) {
-        return res.status(404).json({ error: 'Session not found' });
-      }
-
-      // Kill existing
-      if (session.process && !session.process.killed) {
-        session.process.kill();
-      }
-
-      // Re-create
-      const cwd = session.cwd;
-      sessions.delete(name);
-
-      // Forward to start handler
-      req.body.config = { name, cwd };
-      // Recursively call POST /
-      // In production, extract logic to shared function
-      return res.redirect(307, '/api/julia');
+      res.json({
+        name: result.name,
+        port: result.port,
+        cwd: result.cwd,
+        pid: result.pid,
+        url: `http://localhost:${result.port}/mrp/v1`,
+      });
     } catch (err) {
       console.error('[julia:restart]', err);
       res.status(500).json({ error: err.message });
@@ -199,10 +166,13 @@ export function createJuliaRoutes(ctx) {
    * POST /api/julia/for-document
    * Get or create Julia session for a document
    * Mirrors: electronAPI.julia.forDocument(documentPath)
+   *
+   * Automatically detects project if projectConfig/projectRoot not provided
    */
   router.post('/for-document', async (req, res) => {
     try {
-      const { documentPath } = req.body;
+      let { documentPath, projectConfig, frontmatter, projectRoot } = req.body;
+
       if (!documentPath) {
         return res.status(400).json({ error: 'documentPath required' });
       }
@@ -212,134 +182,46 @@ export function createJuliaRoutes(ctx) {
         return res.json(null);
       }
 
-      const docName = `julia-${path.basename(documentPath, '.md')}`;
-
-      // Check if session exists
-      if (sessions.has(docName)) {
-        const session = sessions.get(docName);
-        return res.json({
-          name: docName,
-          port: session.port,
-          cwd: session.cwd,
-          url: `http://localhost:${session.port}/mrp/v1`,
-        });
+      // Auto-detect project if not provided
+      if (!projectConfig || !projectRoot) {
+        const detected = detectProject(documentPath);
+        if (detected) {
+          projectRoot = projectRoot || detected.root;
+          projectConfig = projectConfig || detected.config;
+        } else {
+          projectRoot = projectRoot || (ctx.projectDir || process.cwd());
+          projectConfig = projectConfig || {};
+        }
       }
 
-      // Create session
-      const fullPath = path.resolve(ctx.projectDir, documentPath);
-      const port = await findFreePort(9001, 9100);
-      const workDir = path.dirname(fullPath);
-
-      const proc = spawn('julia', [
-        '-e',
-        `using MrmdJulia; MrmdJulia.serve(${port})`,
-      ], {
-        cwd: workDir,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      try {
-        await waitForPort(port, 15000);
-      } catch (err) {
-        proc.kill();
-        return res.json(null);
+      // Auto-parse frontmatter if not provided
+      if (!frontmatter) {
+        try {
+          const content = fs.readFileSync(documentPath, 'utf8');
+          frontmatter = Project.parseFrontmatter(content);
+        } catch (e) {
+          frontmatter = null;
+        }
       }
 
-      sessions.set(docName, {
-        port,
-        process: proc,
-        cwd: workDir,
-      });
+      const result = await juliaSessionService.getForDocument(
+        documentPath,
+        projectConfig,
+        frontmatter,
+        projectRoot
+      );
 
-      res.json({
-        name: docName,
-        port,
-        cwd: workDir,
-        url: `http://localhost:${port}/mrp/v1`,
-      });
+      // Add url if we have a port
+      if (result?.port) {
+        result.url = `http://localhost:${result.port}/mrp/v1`;
+      }
+
+      res.json(result);
     } catch (err) {
       console.error('[julia:forDocument]', err);
-      res.status(500).json({ error: err.message });
+      res.json(null);
     }
   });
 
   return router;
-}
-
-/**
- * Check if Julia is available
- */
-async function isJuliaAvailable() {
-  return new Promise((resolve) => {
-    const proc = spawn('julia', ['--version'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    proc.on('close', (code) => {
-      resolve(code === 0);
-    });
-
-    proc.on('error', () => {
-      resolve(false);
-    });
-
-    // Timeout after 5 seconds
-    setTimeout(() => {
-      proc.kill();
-      resolve(false);
-    }, 5000);
-  });
-}
-
-/**
- * Find a free port in range
- */
-async function findFreePort(start, end) {
-  for (let port = start; port <= end; port++) {
-    if (await isPortFree(port)) {
-      return port;
-    }
-  }
-  throw new Error(`No free port found in range ${start}-${end}`);
-}
-
-/**
- * Check if port is free
- */
-function isPortFree(port) {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once('error', () => resolve(false));
-    server.once('listening', () => {
-      server.close();
-      resolve(true);
-    });
-    server.listen(port, '127.0.0.1');
-  });
-}
-
-/**
- * Wait for port to be open
- */
-function waitForPort(port, timeout = 10000) {
-  return new Promise((resolve, reject) => {
-    const start = Date.now();
-
-    function check() {
-      const socket = net.connect(port, '127.0.0.1');
-      socket.once('connect', () => {
-        socket.end();
-        resolve();
-      });
-      socket.once('error', () => {
-        if (Date.now() - start > timeout) {
-          reject(new Error(`Timeout waiting for port ${port}`));
-        } else {
-          setTimeout(check, 200);
-        }
-      });
-    }
-
-    check();
-  });
 }

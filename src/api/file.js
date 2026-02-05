@@ -1,13 +1,11 @@
 /**
  * File API routes
  *
- * Mirrors electronAPI.file.*
+ * Mirrors electronAPI.file.* using FileService from mrmd-electron
  */
 
 import { Router } from 'express';
 import path from 'path';
-import fs from 'fs/promises';
-import { constants as fsConstants } from 'fs';
 
 /**
  * Create file routes
@@ -15,6 +13,7 @@ import { constants as fsConstants } from 'fs';
  */
 export function createFileRoutes(ctx) {
   const router = Router();
+  const { fileService } = ctx;
 
   /**
    * GET /api/file/scan?root=...&extensions=...&maxDepth=...
@@ -23,12 +22,22 @@ export function createFileRoutes(ctx) {
    */
   router.get('/scan', async (req, res) => {
     try {
-      const root = req.query.root || ctx.projectDir;
-      const extensions = req.query.extensions?.split(',') || ['.md'];
-      const maxDepth = parseInt(req.query.maxDepth) || 6;
-      const includeHidden = req.query.includeHidden === 'true';
+      // Default to project dir, then cwd, then home
+      // On servers like RunPod, cwd (/workspace) is more useful than home (/root)
+      const os = await import('os');
+      const root = req.query.root || ctx.projectDir || process.cwd() || os.default.homedir();
+      const options = {
+        // Default to markdown-like docs and .ipynb (like Electron)
+        extensions: req.query.extensions?.split(',') || ['.md', '.qmd', '.ipynb'],
+        maxDepth: parseInt(req.query.maxDepth) || 10,
+        includeHidden: req.query.includeHidden === 'true',
+      };
 
-      const files = await scanDirectory(root, extensions, maxDepth, includeHidden);
+      console.log(`[file:scan] Scanning ${root} with options:`, options);
+      const relativeFiles = await fileService.scan(root, options);
+      // Convert relative paths to absolute (file picker expects absolute paths)
+      const files = relativeFiles.map(f => path.join(root, f));
+      console.log(`[file:scan] Found ${files.length} files`);
       res.json(files);
     } catch (err) {
       console.error('[file:scan]', err);
@@ -48,24 +57,15 @@ export function createFileRoutes(ctx) {
         return res.status(400).json({ error: 'filePath required' });
       }
 
-      const fullPath = resolveSafePath(ctx.projectDir, filePath);
-
-      // Create directory if needed
-      await fs.mkdir(path.dirname(fullPath), { recursive: true });
-
-      // Check if file exists
-      try {
-        await fs.access(fullPath, fsConstants.F_OK);
-        return res.status(409).json({ error: 'File already exists' });
-      } catch {
-        // File doesn't exist, good to create
-      }
-
-      await fs.writeFile(fullPath, content, 'utf-8');
+      const fullPath = resolvePath(ctx.projectDir, filePath);
+      const result = await fileService.createFile(fullPath, content);
 
       ctx.eventBus.projectChanged(ctx.projectDir);
-      res.json({ success: true, path: fullPath });
+      res.json({ success: true, path: result });
     } catch (err) {
+      if (err.message?.includes('already exists')) {
+        return res.status(409).json({ error: 'File already exists' });
+      }
       console.error('[file:create]', err);
       res.status(500).json({ error: err.message });
     }
@@ -84,40 +84,12 @@ export function createFileRoutes(ctx) {
       }
 
       const root = projectRoot || ctx.projectDir;
-      const fullPath = resolveSafePath(root, relativePath);
-
-      // Create directory if needed
-      await fs.mkdir(path.dirname(fullPath), { recursive: true });
-
-      // If file exists, find next available FSML name
-      let finalPath = fullPath;
-      try {
-        await fs.access(fullPath, fsConstants.F_OK);
-        // File exists, generate unique name
-        const dir = path.dirname(fullPath);
-        const ext = path.extname(fullPath);
-        const base = path.basename(fullPath, ext);
-
-        let counter = 1;
-        while (true) {
-          finalPath = path.join(dir, `${base}-${counter}${ext}`);
-          try {
-            await fs.access(finalPath, fsConstants.F_OK);
-            counter++;
-          } catch {
-            break;
-          }
-        }
-      } catch {
-        // File doesn't exist, use original path
-      }
-
-      await fs.writeFile(finalPath, content, 'utf-8');
+      const result = await fileService.createInProject(root, relativePath, content);
 
       ctx.eventBus.projectChanged(root);
       res.json({
         success: true,
-        path: path.relative(root, finalPath),
+        path: result.relativePath,
       });
     } catch (err) {
       console.error('[file:createInProject]', err);
@@ -138,27 +110,13 @@ export function createFileRoutes(ctx) {
       }
 
       const root = projectRoot || ctx.projectDir;
-      const fullFromPath = resolveSafePath(root, fromPath);
-      const fullToPath = resolveSafePath(root, toPath);
-
-      // Create destination directory if needed
-      await fs.mkdir(path.dirname(fullToPath), { recursive: true });
-
-      // Move the file
-      await fs.rename(fullFromPath, fullToPath);
-
-      // TODO: Update internal links in other files (refactoring)
-      // This would require parsing all .md files and updating links
-      // For now, just return the moved file
+      const result = await fileService.move(root, fromPath, toPath);
 
       ctx.eventBus.projectChanged(root);
       res.json({
         success: true,
-        movedFile: {
-          from: fromPath,
-          to: toPath,
-        },
-        updatedFiles: [], // TODO: implement link refactoring
+        movedFile: result.movedFile,
+        updatedFiles: result.updatedFiles || [],
       });
     } catch (err) {
       console.error('[file:move]', err);
@@ -179,36 +137,13 @@ export function createFileRoutes(ctx) {
       }
 
       const root = projectRoot || ctx.projectDir;
-
-      // TODO: Implement FSML reordering
-      // This involves:
-      // 1. Reading the source and target directories
-      // 2. Calculating new FSML prefixes
-      // 3. Renaming files with new prefixes
-
-      // For now, just do a simple move
-      const fullSourcePath = resolveSafePath(root, sourcePath);
-      let fullTargetPath;
-
-      if (position === 'inside') {
-        // Move into target directory
-        fullTargetPath = resolveSafePath(root, path.join(targetPath, path.basename(sourcePath)));
-      } else {
-        // Move to same directory as target
-        fullTargetPath = resolveSafePath(root, path.join(path.dirname(targetPath), path.basename(sourcePath)));
-      }
-
-      await fs.mkdir(path.dirname(fullTargetPath), { recursive: true });
-      await fs.rename(fullSourcePath, fullTargetPath);
+      const result = await fileService.reorder(root, sourcePath, targetPath, position);
 
       ctx.eventBus.projectChanged(root);
       res.json({
         success: true,
-        movedFile: {
-          from: sourcePath,
-          to: path.relative(root, fullTargetPath),
-        },
-        updatedFiles: [],
+        movedFile: result.movedFile,
+        updatedFiles: result.updatedFiles || [],
       });
     } catch (err) {
       console.error('[file:reorder]', err);
@@ -228,14 +163,8 @@ export function createFileRoutes(ctx) {
         return res.status(400).json({ error: 'path query parameter required' });
       }
 
-      const fullPath = resolveSafePath(ctx.projectDir, filePath);
-
-      const stat = await fs.stat(fullPath);
-      if (stat.isDirectory()) {
-        await fs.rm(fullPath, { recursive: true });
-      } else {
-        await fs.unlink(fullPath);
-      }
+      const fullPath = resolvePath(ctx.projectDir, filePath);
+      await fileService.delete(fullPath);
 
       ctx.eventBus.projectChanged(ctx.projectDir);
       res.json({ success: true });
@@ -257,8 +186,8 @@ export function createFileRoutes(ctx) {
         return res.status(400).json({ error: 'path query parameter required' });
       }
 
-      const fullPath = resolveSafePath(ctx.projectDir, filePath);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const fullPath = resolvePath(ctx.projectDir, filePath);
+      const content = await fileService.read(fullPath);
 
       res.json({ success: true, content });
     } catch (err) {
@@ -282,12 +211,8 @@ export function createFileRoutes(ctx) {
         return res.status(400).json({ error: 'filePath required' });
       }
 
-      const fullPath = resolveSafePath(ctx.projectDir, filePath);
-
-      // Create directory if needed
-      await fs.mkdir(path.dirname(fullPath), { recursive: true });
-
-      await fs.writeFile(fullPath, content ?? '', 'utf-8');
+      const fullPath = resolvePath(ctx.projectDir, filePath);
+      await fileService.write(fullPath, content ?? '');
 
       res.json({ success: true });
     } catch (err) {
@@ -310,8 +235,8 @@ export function createFileRoutes(ctx) {
         return res.status(400).json({ error: 'path query parameter required' });
       }
 
-      const fullPath = resolveSafePath(ctx.projectDir, filePath);
-      const content = await fs.readFile(fullPath, 'utf-8');
+      const fullPath = resolvePath(ctx.projectDir, filePath);
+      const content = await fileService.read(fullPath);
       const previewLines = content.split('\n').slice(0, lines).join('\n');
 
       res.json({ success: true, content: previewLines });
@@ -336,7 +261,9 @@ export function createFileRoutes(ctx) {
         return res.status(400).json({ error: 'path query parameter required' });
       }
 
-      const fullPath = resolveSafePath(ctx.projectDir, filePath);
+      const fullPath = resolvePath(ctx.projectDir, filePath);
+      // FileService doesn't have getInfo, use fs directly for this simple operation
+      const fs = await import('fs/promises');
       const stat = await fs.stat(fullPath);
 
       res.json({
@@ -359,49 +286,15 @@ export function createFileRoutes(ctx) {
 }
 
 /**
- * Resolve path safely within project directory
+ * Resolve path - allows full filesystem access
+ *
+ * @param {string} basePath - Base path for relative paths (ignored for absolute)
+ * @param {string} inputPath - Path to resolve (absolute or relative)
+ * @returns {string} Resolved absolute path
  */
-function resolveSafePath(projectDir, relativePath) {
-  const resolved = path.resolve(projectDir, relativePath);
-
-  // Security: ensure resolved path is within project directory
-  if (!resolved.startsWith(path.resolve(projectDir))) {
-    throw new Error('Path traversal not allowed');
+function resolvePath(basePath, inputPath) {
+  if (path.isAbsolute(inputPath)) {
+    return inputPath;
   }
-
-  return resolved;
-}
-
-/**
- * Scan directory for files
- */
-async function scanDirectory(root, extensions, maxDepth, includeHidden, currentDepth = 0) {
-  if (currentDepth > maxDepth) return [];
-
-  const files = [];
-  const entries = await fs.readdir(root, { withFileTypes: true });
-
-  for (const entry of entries) {
-    // Skip hidden files unless requested
-    if (!includeHidden && entry.name.startsWith('.')) continue;
-
-    // Skip common non-content directories
-    if (entry.name === 'node_modules') continue;
-    if (entry.name === '__pycache__') continue;
-    if (entry.name === '.git') continue;
-
-    const fullPath = path.join(root, entry.name);
-
-    if (entry.isDirectory()) {
-      const subFiles = await scanDirectory(fullPath, extensions, maxDepth, includeHidden, currentDepth + 1);
-      files.push(...subFiles);
-    } else {
-      const ext = path.extname(entry.name);
-      if (extensions.includes(ext)) {
-        files.push(fullPath);
-      }
-    }
-  }
-
-  return files;
+  return path.resolve(basePath, inputPath);
 }

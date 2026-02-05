@@ -10,6 +10,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { spawn, execSync } from 'child_process';
+import { ensureAiServer, getAiServer, restartAiServer } from '../ai-service.js';
 
 /**
  * Create system routes
@@ -187,14 +188,43 @@ export function createSystemRoutes(ctx) {
 
   /**
    * GET /api/system/ai
-   * Get AI server info
+   * Get AI server info - ensures AI server is running
    * Mirrors: electronAPI.getAi()
    */
-  router.get('/ai', (req, res) => {
-    res.json({
-      port: ctx.aiPort,
-      url: `http://localhost:${ctx.aiPort}`,
-    });
+  router.get('/ai', async (req, res) => {
+    try {
+      // Ensure AI server is running (starts it if not)
+      const result = await ensureAiServer();
+      res.json(result);
+    } catch (err) {
+      console.error('[system:ai]', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * GET /api/system/ai/status
+   * Get AI server status without starting it
+   */
+  router.get('/ai/status', (req, res) => {
+    res.json(getAiServer());
+  });
+
+  /**
+   * POST /api/system/ai/restart
+   * Restart AI server with new API keys
+   * Call this after changing API keys in settings
+   */
+  router.post('/ai/restart', async (req, res) => {
+    try {
+      const { apiKeys } = req.body;
+      console.log('[system:ai:restart] Restarting AI server with new API keys');
+      const result = await restartAiServer(apiKeys);
+      res.json(result);
+    } catch (err) {
+      console.error('[system:ai:restart]', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
   /**
@@ -214,6 +244,104 @@ export function createSystemRoutes(ctx) {
     } catch (err) {
       console.error('[system:discover-venvs]', err);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/system/create-venv
+   * Create a new Python virtual environment
+   * Mirrors: electronAPI.createVenv(venvPath)
+   */
+  router.post('/create-venv', async (req, res) => {
+    try {
+      const { venvPath } = req.body;
+      if (!venvPath) {
+        return res.status(400).json({ error: 'venvPath required' });
+      }
+
+      const resolvedPath = path.resolve(venvPath);
+
+      // Check if venv already exists
+      if (existsSync(path.join(resolvedPath, 'bin', 'activate'))) {
+        return res.json({
+          success: true,
+          path: resolvedPath,
+          message: 'Virtual environment already exists',
+        });
+      }
+
+      // Create parent directory if needed
+      await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+
+      // Try uv first (faster)
+      let uvPath = null;
+      try {
+        uvPath = execSync('which uv', { encoding: 'utf-8' }).trim();
+      } catch {
+        // Check common locations
+        const uvLocations = [
+          path.join(os.homedir(), '.local', 'bin', 'uv'),
+          '/usr/local/bin/uv',
+          '/usr/bin/uv',
+        ];
+        for (const loc of uvLocations) {
+          if (existsSync(loc)) {
+            uvPath = loc;
+            break;
+          }
+        }
+      }
+
+      if (uvPath) {
+        // Use uv to create venv
+        const proc = spawn(uvPath, ['venv', resolvedPath], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+
+        let stderr = '';
+        proc.stderr.on('data', (data) => { stderr += data; });
+
+        await new Promise((resolve, reject) => {
+          proc.on('close', (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`uv venv failed: ${stderr}`));
+          });
+          proc.on('error', reject);
+        });
+      } else {
+        // Fallback to python3 -m venv
+        const proc = spawn('python3', ['-m', 'venv', resolvedPath], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+
+        let stderr = '';
+        proc.stderr.on('data', (data) => { stderr += data; });
+
+        await new Promise((resolve, reject) => {
+          proc.on('close', (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`python3 -m venv failed (code ${code}): ${stderr}`));
+          });
+          proc.on('error', reject);
+        });
+      }
+
+      // Verify creation
+      if (existsSync(path.join(resolvedPath, 'bin', 'activate'))) {
+        res.json({
+          success: true,
+          path: resolvedPath,
+          method: uvPath ? 'uv' : 'python3',
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: 'Virtual environment creation completed but activation script not found',
+        });
+      }
+    } catch (err) {
+      console.error('[system:create-venv]', err);
+      res.status(500).json({ success: false, error: err.message });
     }
   });
 

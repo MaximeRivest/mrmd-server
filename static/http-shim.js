@@ -18,6 +18,59 @@
   const BASE_URL = window.MRMD_SERVER_URL || window.location.origin;
 
   // ==========================================================================
+  // WebSocket Proxy Interceptor
+  // ==========================================================================
+  // Intercept WebSocket connections to localhost sync servers and route through proxy
+  const OriginalWebSocket = window.WebSocket;
+  window.WebSocket = function(url, protocols) {
+    let targetUrl = url;
+
+    // Check if this is a sync connection to localhost
+    const match = url.match(/^wss?:\/\/127\.0\.0\.1:(\d+)\/(.+)$/);
+    if (match) {
+      const [, port, docPath] = match;
+      // Route through server proxy
+      const proxyUrl = new URL(`/sync/${port}/${docPath}`, BASE_URL);
+      proxyUrl.protocol = proxyUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+      targetUrl = proxyUrl.toString();
+      console.log(`[http-shim] Proxying sync WebSocket: ${url} -> ${targetUrl}`);
+    }
+
+    return new OriginalWebSocket(targetUrl, protocols);
+  };
+  window.WebSocket.prototype = OriginalWebSocket.prototype;
+  window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
+  window.WebSocket.OPEN = OriginalWebSocket.OPEN;
+  window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
+  window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
+
+  // ==========================================================================
+  // Fetch Proxy Interceptor
+  // ==========================================================================
+  // Intercept fetch requests to localhost services (bash, pty) and route through proxy
+  const OriginalFetch = window.fetch;
+  window.fetch = function(input, init) {
+    let url = typeof input === 'string' ? input : input.url;
+
+    // Check if this is a request to localhost service
+    const match = url.match(/^https?:\/\/(?:127\.0\.0\.1|localhost):(\d+)\/(.*)$/);
+    if (match) {
+      const [, port, path] = match;
+      // Route through server proxy
+      const proxyUrl = new URL(`/proxy/${port}/${path}`, BASE_URL);
+      console.log(`[http-shim] Proxying fetch: ${url} -> ${proxyUrl.toString()}`);
+
+      if (typeof input === 'string') {
+        input = proxyUrl.toString();
+      } else {
+        input = new Request(proxyUrl.toString(), input);
+      }
+    }
+
+    return OriginalFetch.call(window, input, init);
+  };
+
+  // ==========================================================================
   // HTTP Client
   // ==========================================================================
 
@@ -162,7 +215,26 @@
     // File scanning
     // ========================================================================
 
-    scanFiles: (searchDir) => GET(`/api/file/scan?root=${encodeURIComponent(searchDir || '')}`),
+    scanFiles: (searchDir) => {
+      // Trigger scan and emit results via onFilesUpdate (matches electron behavior)
+      GET(`/api/file/scan?root=${encodeURIComponent(searchDir || '')}`)
+        .then(files => {
+          // Emit files-update event with the results
+          const handlers = eventHandlers['files-update'];
+          if (handlers) {
+            handlers.forEach(cb => {
+              try {
+                cb({ files });
+              } catch (err) {
+                console.error('[http-shim] files-update handler error:', err);
+              }
+            });
+          }
+        })
+        .catch(err => {
+          console.error('[http-shim] scanFiles error:', err);
+        });
+    },
 
     onFilesUpdate: (callback) => {
       eventHandlers['files-update'].push(callback);
@@ -197,6 +269,9 @@
     // Python management
     // ========================================================================
 
+    createVenv: (venvPath) =>
+      POST('/api/system/create-venv', { venvPath }),
+
     installMrmdPython: (venvPath) =>
       POST('/api/system/install-mrmd-python', { venvPath }),
 
@@ -218,11 +293,25 @@
     // ========================================================================
 
     openFile: async (filePath) => {
-      // This was used to open a file and get session info
-      // We'll get project info and session info separately
+      // Get project info and session info
       const project = await window.electronAPI.project.get(filePath);
       const session = await window.electronAPI.session.forDocument(filePath);
-      return { project, session };
+
+      // Extract filename without extension for docName
+      const fileName = filePath.split('/').pop();
+      const lower = fileName.toLowerCase();
+      const docName = lower.endsWith('.md') ? fileName.replace(/\.md$/i, '') : fileName;
+
+      // Use syncPort from project response (dynamically assigned per-project)
+      const syncPort = project?.syncPort || 4444;
+
+      return {
+        success: true,
+        syncPort,
+        docName,
+        projectDir: project?.root || filePath.split('/').slice(0, -1).join('/'),
+        pythonPort: session?.pythonPort || null,
+      };
     },
 
     // ========================================================================
@@ -333,6 +422,98 @@
     },
 
     // ========================================================================
+    // R SESSION SERVICE
+    // ========================================================================
+
+    r: {
+      list: () => GET('/api/r'),
+
+      start: (config) => POST('/api/r', { config }),
+
+      stop: (sessionName) => DELETE(`/api/r/${encodeURIComponent(sessionName)}`),
+
+      restart: (sessionName) => POST(`/api/r/${encodeURIComponent(sessionName)}/restart`, {}),
+
+      forDocument: (documentPath) => POST('/api/r/for-document', { documentPath }),
+
+      isAvailable: () => GET('/api/r/available').then(r => r.available),
+    },
+
+    // ========================================================================
+    // SETTINGS SERVICE
+    // ========================================================================
+
+    settings: {
+      getAll: () => GET('/api/settings'),
+
+      get: (key, defaultValue) =>
+        GET(`/api/settings/key?path=${encodeURIComponent(key)}${defaultValue !== undefined ? `&default=${encodeURIComponent(defaultValue)}` : ''}`).then(r => r.value),
+
+      set: (key, value) =>
+        POST('/api/settings/key', { key, value }).then(r => r.success),
+
+      update: (updates) =>
+        POST('/api/settings/update', { updates }).then(r => r.success),
+
+      reset: () =>
+        POST('/api/settings/reset', {}).then(r => r.success),
+
+      getApiKeys: (masked = true) =>
+        GET(`/api/settings/api-keys?masked=${masked}`),
+
+      setApiKey: (provider, key) =>
+        POST('/api/settings/api-key', { provider, key }).then(r => r.success),
+
+      getApiKey: (provider) =>
+        GET(`/api/settings/api-key/${encodeURIComponent(provider)}`).then(r => r.key),
+
+      hasApiKey: (provider) =>
+        GET(`/api/settings/api-key/${encodeURIComponent(provider)}/exists`).then(r => r.hasKey),
+
+      getApiProviders: () =>
+        GET('/api/settings/api-providers'),
+
+      getQualityLevels: () =>
+        GET('/api/settings/quality-levels'),
+
+      setQualityLevelModel: (level, model) =>
+        POST(`/api/settings/quality-level/${level}/model`, { model }).then(r => r.success),
+
+      getCustomSections: () =>
+        GET('/api/settings/custom-sections'),
+
+      addCustomSection: (name) =>
+        POST('/api/settings/custom-section', { name }),
+
+      removeCustomSection: (sectionId) =>
+        DELETE(`/api/settings/custom-section/${encodeURIComponent(sectionId)}`).then(r => r.success),
+
+      addCustomCommand: (sectionId, command) =>
+        POST('/api/settings/custom-command', { sectionId, command }),
+
+      updateCustomCommand: (sectionId, commandId, updates) =>
+        apiCall('PUT', '/api/settings/custom-command', { sectionId, commandId, updates }).then(r => r.success),
+
+      removeCustomCommand: (sectionId, commandId) =>
+        apiCall('DELETE', '/api/settings/custom-command', { sectionId, commandId }).then(r => r.success),
+
+      getAllCustomCommands: () =>
+        GET('/api/settings/custom-commands'),
+
+      getDefaults: () =>
+        GET('/api/settings/defaults'),
+
+      setDefaults: (defaults) =>
+        POST('/api/settings/defaults', defaults).then(r => r.success),
+
+      export: (includeKeys = false) =>
+        GET(`/api/settings/export?includeKeys=${includeKeys}`).then(r => r.json),
+
+      import: (json, mergeKeys = false) =>
+        POST('/api/settings/import', { json, mergeKeys }).then(r => r.success),
+    },
+
+    // ========================================================================
     // FILE SERVICE
     // ========================================================================
 
@@ -404,6 +585,15 @@
     onSyncServerDied: (callback) => {
       // Remove existing handlers to prevent duplicates
       eventHandlers['sync-server-died'] = [callback];
+    },
+
+    /**
+     * Register callback for OS "open with" events.
+     * In browser mode, this will never be called (no OS integration).
+     */
+    onOpenWithFile: (callback) => {
+      // No-op in browser mode - OS file associations don't exist
+      // Could potentially be triggered via URL parameters in the future
     },
   };
 

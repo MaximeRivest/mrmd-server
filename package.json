@@ -1,12 +1,18 @@
 {
   "name": "mrmd-server",
-  "version": "0.1.0",
+  "version": "0.1.22",
   "description": "HTTP server for mrmd - run mrmd in any browser, access from anywhere",
   "type": "module",
   "main": "src/index.js",
   "bin": {
     "mrmd-server": "./bin/cli.js"
   },
+  "files": [
+    "src",
+    "bin",
+    "static",
+    "README.md"
+  ],
   "scripts": {
     "start": "node bin/cli.js",
     "dev": "node bin/cli.js --dev"
@@ -17,9 +23,18 @@
     "notebook",
     "server",
     "remote",
-    "collaboration"
+    "collaboration",
+    "literate-programming",
+    "code-execution"
   ],
+  "author": "Anthropic",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anthropics/mrmd.git",
+    "directory": "packages/mrmd-server"
+  },
+  "homepage": "https://github.com/anthropics/mrmd",
   "engines": {
     "node": ">=18.0.0"
   },
@@ -30,6 +45,8 @@
     "multer": "^1.4.5-lts.1",
     "chokidar": "^3.6.0",
     "fzf": "^0.5.2",
-    "mrmd-project": "*"
+    "mrmd-project": "^0.1.2",
+    "mrmd-electron": "^0.3.4",
+    "mrmd-sync": "^0.3.3"
   }
 }

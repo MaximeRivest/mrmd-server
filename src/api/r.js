@@ -1,17 +1,17 @@
 /**
- * Session API routes
+ * R Session API routes
  *
- * Mirrors electronAPI.session.* using SessionService from mrmd-electron
+ * Mirrors electronAPI.r.* using RSessionService from mrmd-electron
  */
 
 import { Router } from 'express';
 import { Project } from 'mrmd-project';
+import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 /**
  * Detect project from a file path
- * Returns { root, config } or null if not in a project
  */
 function detectProject(filePath) {
   const root = Project.findRoot(filePath, (dir) => fs.existsSync(path.join(dir, 'mrmd.md')));
@@ -28,32 +28,71 @@ function detectProject(filePath) {
 }
 
 /**
- * Create session routes
+ * Check if R is available on the system
+ */
+async function isRAvailable() {
+  return new Promise((resolve) => {
+    const proc = spawn('R', ['--version'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    proc.on('close', (code) => {
+      resolve(code === 0);
+    });
+
+    proc.on('error', () => {
+      resolve(false);
+    });
+
+    // Timeout after 5 seconds
+    setTimeout(() => {
+      proc.kill();
+      resolve(false);
+    }, 5000);
+  });
+}
+
+/**
+ * Create R routes
  * @param {import('../server.js').ServerContext} ctx
  */
-export function createSessionRoutes(ctx) {
+export function createRRoutes(ctx) {
   const router = Router();
-  const { sessionService } = ctx;
+  const { rSessionService } = ctx;
 
   /**
-   * GET /api/session
-   * List all running sessions
-   * Mirrors: electronAPI.session.list()
+   * GET /api/r
+   * List all running R sessions
+   * Mirrors: electronAPI.r.list()
    */
   router.get('/', async (req, res) => {
     try {
-      const list = sessionService.list();
+      const list = rSessionService.list();
       res.json(list);
     } catch (err) {
-      console.error('[session:list]', err);
+      console.error('[r:list]', err);
       res.status(500).json({ error: err.message });
     }
   });
 
   /**
-   * POST /api/session
-   * Start a new session
-   * Mirrors: electronAPI.session.start(config)
+   * GET /api/r/available
+   * Check if R is available on the system
+   */
+  router.get('/available', async (req, res) => {
+    try {
+      const available = await isRAvailable();
+      res.json({ available });
+    } catch (err) {
+      console.error('[r:available]', err);
+      res.json({ available: false });
+    }
+  });
+
+  /**
+   * POST /api/r
+   * Start a new R session
+   * Mirrors: electronAPI.r.start(config)
    */
   router.post('/', async (req, res) => {
     try {
@@ -63,68 +102,69 @@ export function createSessionRoutes(ctx) {
         return res.status(400).json({ error: 'config.name required' });
       }
 
-      const result = await sessionService.start(config);
+      // Check if R is available
+      if (!await isRAvailable()) {
+        return res.status(503).json({ error: 'R is not available on this system' });
+      }
 
-      // Return in expected format
+      const result = await rSessionService.start(config);
+
       res.json({
         name: result.name,
         port: result.port,
-        venv: result.venv,
         cwd: result.cwd,
         pid: result.pid,
         url: `http://localhost:${result.port}/mrp/v1`,
       });
     } catch (err) {
-      console.error('[session:start]', err);
+      console.error('[r:start]', err);
       res.status(500).json({ error: err.message });
     }
   });
 
   /**
-   * DELETE /api/session/:name
-   * Stop a session
-   * Mirrors: electronAPI.session.stop(sessionName)
+   * DELETE /api/r/:name
+   * Stop an R session
+   * Mirrors: electronAPI.r.stop(sessionName)
    */
   router.delete('/:name', async (req, res) => {
     try {
       const { name } = req.params;
-      await sessionService.stop(name);
+      await rSessionService.stop(name);
       res.json({ success: true });
     } catch (err) {
-      console.error('[session:stop]', err);
-      // Even if session not found, return success (idempotent)
+      console.error('[r:stop]', err);
       res.json({ success: true, message: err.message });
     }
   });
 
   /**
-   * POST /api/session/:name/restart
-   * Restart a session
-   * Mirrors: electronAPI.session.restart(sessionName)
+   * POST /api/r/:name/restart
+   * Restart an R session
+   * Mirrors: electronAPI.r.restart(sessionName)
    */
   router.post('/:name/restart', async (req, res) => {
     try {
       const { name } = req.params;
-      const result = await sessionService.restart(name);
+      const result = await rSessionService.restart(name);
 
       res.json({
         name: result.name,
         port: result.port,
-        venv: result.venv,
         cwd: result.cwd,
         pid: result.pid,
         url: `http://localhost:${result.port}/mrp/v1`,
       });
     } catch (err) {
-      console.error('[session:restart]', err);
+      console.error('[r:restart]', err);
       res.status(500).json({ error: err.message });
     }
   });
 
   /**
-   * POST /api/session/for-document
-   * Get or create session for a document
-   * Mirrors: electronAPI.session.forDocument(documentPath)
+   * POST /api/r/for-document
+   * Get or create R session for a document
+   * Mirrors: electronAPI.r.forDocument(documentPath)
    *
    * Automatically detects project if projectConfig/projectRoot not provided
    */
@@ -134,6 +174,11 @@ export function createSessionRoutes(ctx) {
 
       if (!documentPath) {
         return res.status(400).json({ error: 'documentPath required' });
+      }
+
+      // Check if R is available
+      if (!await isRAvailable()) {
+        return res.json(null);
       }
 
       // Auto-detect project if not provided
@@ -158,7 +203,7 @@ export function createSessionRoutes(ctx) {
         }
       }
 
-      const result = await sessionService.getForDocument(
+      const result = await rSessionService.getForDocument(
         documentPath,
         projectConfig,
         frontmatter,
@@ -172,30 +217,8 @@ export function createSessionRoutes(ctx) {
 
       res.json(result);
     } catch (err) {
-      console.error('[session:forDocument]', err);
-      // Return null on error (non-blocking - editor works without Python)
+      console.error('[r:forDocument]', err);
       res.json(null);
-    }
-  });
-
-  /**
-   * POST /api/session/attach
-   * Attach to an existing session
-   * Mirrors: electronAPI.session.attach(sessionName)
-   */
-  router.post('/attach', async (req, res) => {
-    try {
-      const { sessionName } = req.body;
-
-      if (!sessionName) {
-        return res.status(400).json({ error: 'sessionName required' });
-      }
-
-      const result = sessionService.attach(sessionName);
-      res.json(result);
-    } catch (err) {
-      console.error('[session:attach]', err);
-      res.status(500).json({ error: err.message });
     }
   });
 

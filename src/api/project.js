@@ -1,13 +1,55 @@
 /**
  * Project API routes
  *
- * Mirrors electronAPI.project.*
+ * Mirrors electronAPI.project.* using ProjectService from mrmd-electron
+ * and dynamic sync server management.
  */
 
 import { Router } from 'express';
 import path from 'path';
 import fs from 'fs/promises';
+import { existsSync, readFileSync } from 'fs';
 import { watch } from 'chokidar';
+import { Project } from 'mrmd-project';
+
+const DOC_EXTENSIONS = ['.md', '.qmd'];
+
+function isDocFile(filePath) {
+  if (!filePath) return false;
+  const lower = filePath.toLowerCase();
+  return DOC_EXTENSIONS.some(ext => lower.endsWith(ext));
+}
+
+function stripDocExtension(fileName) {
+  if (!fileName) return '';
+  const lower = fileName.toLowerCase();
+  for (const ext of DOC_EXTENSIONS) {
+    if (lower.endsWith(ext)) return fileName.slice(0, -ext.length);
+  }
+  return fileName;
+}
+
+/**
+ * Detect project from a file path
+ * Returns { root, config } or null if not in a project
+ */
+function detectProject(filePath) {
+  // Use mrmd-project's findRoot to locate project root
+  const root = Project.findRoot(filePath, (dir) => existsSync(path.join(dir, 'mrmd.md')));
+
+  if (!root) return null;
+
+  // Read and parse mrmd.md config
+  try {
+    const mrmdPath = path.join(root, 'mrmd.md');
+    const content = readFileSync(mrmdPath, 'utf8');
+    const config = Project.parseConfig(content);
+    return { root, config };
+  } catch (e) {
+    // mrmd.md exists but couldn't be read/parsed
+    return { root, config: {} };
+  }
+}
 
 /**
  * Create project routes
@@ -15,11 +57,14 @@ import { watch } from 'chokidar';
  */
 export function createProjectRoutes(ctx) {
   const router = Router();
+  const { projectService, acquireSyncServer, releaseSyncServer, getSyncServer, listSyncServers } = ctx;
 
   /**
    * GET /api/project?path=...
    * Get project info for a file path
    * Mirrors: electronAPI.project.get(filePath)
+   *
+   * Enhanced: Now uses mrmd-project for detection and starts sync server dynamically
    */
   router.get('/', async (req, res) => {
     try {
@@ -28,10 +73,87 @@ export function createProjectRoutes(ctx) {
         return res.status(400).json({ error: 'path query parameter required' });
       }
 
-      const projectInfo = await getProjectInfo(filePath, ctx.projectDir);
-      res.json(projectInfo);
+      // Detect project from file path
+      const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(ctx.projectDir || process.cwd(), filePath);
+      const detected = detectProject(resolvedPath);
+
+      if (detected) {
+        // Get or start sync server for this project
+        let syncInfo = null;
+        try {
+          syncInfo = await acquireSyncServer(detected.root);
+        } catch (e) {
+          console.warn('[project] Could not start sync server:', e.message);
+        }
+
+        // Build nav tree
+        const navTree = await buildNavTree(detected.root);
+
+        res.json({
+          root: detected.root,
+          config: detected.config,
+          navTree,
+          files: flattenNavTree(navTree, detected.root),
+          currentFile: resolvedPath,
+          syncPort: syncInfo?.port || null,
+        });
+      } else {
+        // No project detected, use fallback
+        const projectInfo = await getProjectInfo(filePath, ctx.projectDir || process.cwd());
+        res.json(projectInfo);
+      }
     } catch (err) {
       console.error('[project:get]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * GET /api/project/sync
+   * List all active sync servers
+   */
+  router.get('/sync', async (req, res) => {
+    try {
+      const servers = listSyncServers();
+      res.json(servers);
+    } catch (err) {
+      console.error('[project:sync]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/project/sync/acquire
+   * Acquire sync server for a project directory
+   */
+  router.post('/sync/acquire', async (req, res) => {
+    try {
+      const { projectDir } = req.body;
+      if (!projectDir) {
+        return res.status(400).json({ error: 'projectDir required' });
+      }
+      const server = await acquireSyncServer(projectDir);
+      res.json({ port: server.port, dir: server.dir, refCount: server.refCount });
+    } catch (err) {
+      console.error('[project:sync/acquire]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/project/sync/release
+   * Release sync server for a project directory
+   */
+  router.post('/sync/release', async (req, res) => {
+    try {
+      const { projectDir } = req.body;
+      if (!projectDir) {
+        return res.status(400).json({ error: 'projectDir required' });
+      }
+      releaseSyncServer(projectDir);
+      res.json({ success: true });
+    } catch (err) {
+      console.error('[project:sync/release]', err);
       res.status(500).json({ error: err.message });
     }
   });
@@ -40,6 +162,11 @@ export function createProjectRoutes(ctx) {
    * POST /api/project
    * Create a new mrmd project
    * Mirrors: electronAPI.project.create(targetPath)
+   *
+   * Uses ProjectService.createProject() which:
+   * 1. Creates scaffold files (mrmd.md, index files)
+   * 2. Creates venv
+   * 3. Installs mrmd-python
    */
   router.post('/', async (req, res) => {
     try {
@@ -50,23 +177,8 @@ export function createProjectRoutes(ctx) {
 
       const resolvedPath = path.resolve(ctx.projectDir, targetPath);
 
-      // Create directory if it doesn't exist
-      await fs.mkdir(resolvedPath, { recursive: true });
-
-      // Create mrmd.md config file
-      const mrmdPath = path.join(resolvedPath, 'mrmd.md');
-      const mrmdContent = `# ${path.basename(resolvedPath)}
-
-A new mrmd project.
-
----
-venv: .venv
----
-`;
-      await fs.writeFile(mrmdPath, mrmdContent);
-
-      // Get and return project info
-      const projectInfo = await getProjectInfo(mrmdPath, ctx.projectDir);
+      // Use ProjectService to create full project (same as Electron)
+      const projectInfo = await projectService.createProject(resolvedPath);
       res.json(projectInfo);
     } catch (err) {
       console.error('[project:create]', err);
@@ -131,7 +243,7 @@ venv: .venv
       });
 
       watcher.on('all', (event, filePath) => {
-        if (filePath.endsWith('.md')) {
+        if (isDocFile(filePath)) {
           ctx.eventBus.projectChanged(watchPath);
         }
       });
@@ -198,26 +310,87 @@ async function getProjectInfo(filePath, defaultRoot) {
   // Build nav tree
   const navTree = await buildNavTree(projectRoot);
 
+  // Collect all files from nav tree (flattened)
+  const files = flattenNavTree(navTree, projectRoot);
+
   return {
     root: projectRoot,
     config: mrmdConfig,
     navTree,
+    files,
     currentFile: resolvedPath,
   };
 }
 
 /**
- * Parse mrmd.md config (frontmatter)
+ * Flatten nav tree to list of file paths
+ */
+function flattenNavTree(nodes, projectRoot) {
+  const files = [];
+  for (const node of nodes) {
+    if (!node.isFolder) {
+      files.push(path.join(projectRoot, node.path));
+    } else if (node.children) {
+      files.push(...flattenNavTree(node.children, projectRoot));
+    }
+  }
+  return files;
+}
+
+/**
+ * Parse mrmd.md config (from yaml config code blocks)
  */
 function parseMrmdConfig(content) {
   const config = { venv: '.venv' };
 
-  // Simple YAML frontmatter parsing
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (match) {
+  // Find all ```yaml config blocks and merge them
+  const configBlockRegex = /```yaml\s+config\n([\s\S]*?)```/g;
+  let match;
+
+  while ((match = configBlockRegex.exec(content)) !== null) {
     const yaml = match[1];
-    const venvMatch = yaml.match(/venv:\s*(.+)/);
+
+    // Parse name
+    const nameMatch = yaml.match(/^name:\s*["']?([^"'\n]+)["']?/m);
+    if (nameMatch) {
+      config.name = nameMatch[1].trim();
+    }
+
+    // Parse venv (direct or under session.python)
+    const venvMatch = yaml.match(/^\s*venv:\s*["']?([^"'\n]+)["']?/m);
     if (venvMatch) {
+      config.venv = venvMatch[1].trim();
+    }
+
+    // Parse session config
+    const sessionMatch = yaml.match(/^session:\n([\s\S]*?)(?=^[^\s]|\Z)/m);
+    if (sessionMatch) {
+      config.session = {};
+      const sessionYaml = sessionMatch[1];
+
+      // Parse python session
+      const pythonMatch = sessionYaml.match(/^\s+python:\n([\s\S]*?)(?=^\s+\w+:|\Z)/m);
+      if (pythonMatch) {
+        config.session.python = {};
+        const pyYaml = pythonMatch[1];
+        const pyVenv = pyYaml.match(/venv:\s*["']?([^"'\n]+)["']?/);
+        if (pyVenv) config.session.python.venv = pyVenv[1].trim();
+        const pyCwd = pyYaml.match(/cwd:\s*["']?([^"'\n]+)["']?/);
+        if (pyCwd) config.session.python.cwd = pyCwd[1].trim();
+        const pyName = pyYaml.match(/name:\s*["']?([^"'\n]+)["']?/);
+        if (pyName) config.session.python.name = pyName[1].trim();
+        const pyAutoStart = pyYaml.match(/auto_start:\s*(true|false)/);
+        if (pyAutoStart) config.session.python.auto_start = pyAutoStart[1] === 'true';
+      }
+    }
+  }
+
+  // Also check YAML frontmatter for backwards compatibility
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (fmMatch) {
+    const yaml = fmMatch[1];
+    const venvMatch = yaml.match(/venv:\s*(.+)/);
+    if (venvMatch && !config.venv) {
       config.venv = venvMatch[1].trim();
     }
   }
@@ -255,19 +428,19 @@ async function buildNavTree(projectRoot, relativePath = '') {
 
     if (entry.isDirectory()) {
       const children = await buildNavTree(projectRoot, entryRelPath);
-      // Only include directories that have .md files (directly or nested)
+      // Only include directories that have markdown-like doc files (directly or nested)
       if (children.length > 0 || await hasIndexFile(path.join(projectRoot, entryRelPath))) {
         nodes.push({
-          type: 'folder',
-          name: cleanName(entry.name),
+          isFolder: true,
+          title: cleanName(entry.name),
           path: entryRelPath,
           children,
         });
       }
-    } else if (entry.name.endsWith('.md') && entry.name !== 'mrmd.md') {
+    } else if (isDocFile(entry.name) && entry.name !== 'mrmd.md') {
       nodes.push({
-        type: 'file',
-        name: cleanName(entry.name.replace(/\.md$/, '')),
+        isFolder: false,
+        title: cleanName(stripDocExtension(entry.name)),
         path: entryRelPath,
       });
     }
@@ -282,7 +455,7 @@ async function buildNavTree(projectRoot, relativePath = '') {
 async function hasIndexFile(dirPath) {
   try {
     const entries = await fs.readdir(dirPath);
-    return entries.some(e => e.endsWith('.md'));
+    return entries.some(e => isDocFile(e));
   } catch {
     return false;
   }

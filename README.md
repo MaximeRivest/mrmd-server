@@ -1,17 +1,19 @@
-# mrmd-server
+# MRMD Server
 
-Run mrmd in any browser. Access your notebooks from anywhere.
+**Run MRMD in any browser.** Access your markdown notebooks from anywhere — your phone, tablet, or any machine with a browser.
+
+[![npm version](https://img.shields.io/npm/v/mrmd-server)](https://www.npmjs.com/package/mrmd-server)  [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Your VPS / Cloud Server                   │
+│                    Your Server / VPS / Cloud                │
 │                                                             │
 │   ┌─────────────────────────────────────────────────────┐   │
 │   │                    mrmd-server                       │   │
-│   │  • HTTP API (full electronAPI equivalent)           │   │
-│   │  • Static file serving                              │   │
-│   │  • WebSocket for real-time events                   │   │
-│   │  • Token authentication                             │   │
+│   │  • Full MRMD UI served over HTTP                    │   │
+│   │  • Code execution (Python, JS, Bash, R, Julia)      │   │
+│   │  • Real-time collaboration via WebSocket            │   │
+│   │  • Token-based authentication                       │   │
 │   └─────────────────────────────────────────────────────┘   │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
@@ -25,23 +27,65 @@ Run mrmd in any browser. Access your notebooks from anywhere.
           └───────┘              └─────────┘       └─────────┘
 ```
 
+---
+
+## What is MRMD Server?
+
+MRMD Server is the headless/server version of [MRMD Electron](https://github.com/MaximeRivest/mrmd-electron). It provides the same markdown notebook experience without requiring a desktop app — just start the server and open it in any browser.
+
+**Use cases:**
+- Run notebooks on a remote GPU server, access from your laptop
+- Host shared notebooks for a team
+- Access your notebooks from your phone or tablet
+- Deploy on a cloud VM for always-on compute
+
+---
+
 ## Features
 
-- **Same UI as Electron** - Uses the exact same index.html from mrmd-electron
-- **Access from anywhere** - Phone, tablet, any browser
-- **Real-time collaboration** - Yjs sync works over WebSocket
-- **Token authentication** - Secure access with shareable links
-- **Portable compute** - Move your disk to a GPU server when needed
+### Same UI as Desktop
+The exact same editor, code execution, and collaboration features as MRMD Electron.
+
+### Access from Anywhere
+Open your notebooks in any browser — phone, tablet, another computer.
+
+### Real-Time Collaboration
+Share the URL with teammates. Changes sync instantly via Yjs CRDT.
+
+### Token Authentication
+Secure access with auto-generated or custom tokens. Share links safely.
+
+### Portable Compute
+Start the server wherever your data lives. GPU machine? Local workstation? Cloud VM? Just run `mrmd-server`.
+
+---
+
+## Installation
+
+### npm (recommended)
+
+```bash
+npm install -g mrmd-server
+```
+
+### npx (no install)
+
+```bash
+npx mrmd-server ./my-notebooks
+```
+
+### Requirements
+
+- **Node.js 18+**
+- **Python 3.11+** with [uv](https://github.com/astral-sh/uv) (for Python execution)
+
+---
 
 ## Quick Start
 
 ```bash
-# Install
-cd mrmd-packages/mrmd-server
-npm install
-
 # Start server in your project directory
-npx mrmd-server ./my-notebooks
+mrmd-server ./my-notebooks
 
 # Output:
 #   mrmd-server
@@ -54,9 +98,26 @@ npx mrmd-server ./my-notebooks
 #   http://localhost:8080?token=abc123xyz...
 ```
 
+Open the Access URL in your browser. That's it.
+
+---
+
 ## Usage
 
-### Basic Usage
+### Command Line Options
+
+```bash
+mrmd-server [options] [project-dir]
+
+Options:
+  -p, --port <port>     HTTP port (default: 8080)
+  -h, --host <host>     Bind address (default: 0.0.0.0)
+  -t, --token <token>   Auth token (auto-generated if not provided)
+  --no-auth             Disable authentication (local dev only!)
+  --help                Show help
+```
+
+### Examples
 
 ```bash
 # Start in current directory
@@ -68,163 +129,185 @@ mrmd-server ./my-project
 # Custom port
 mrmd-server -p 3000 ./my-project
 
-# With specific token
+# With specific token (for automation)
 mrmd-server -t my-secret-token ./my-project
 
 # No auth (local development only!)
-mrmd-server --no-auth ./my-project
+mrmd-server --no-auth
 ```
 
-### Remote Access
+---
 
-1. Start mrmd-server on your VPS:
-   ```bash
-   mrmd-server -p 8080 /home/you/notebooks
-   ```
+## Remote Access Setup
 
-2. Set up HTTPS (recommended) with nginx or caddy:
-   ```nginx
-   server {
-       listen 443 ssl;
-       server_name notebooks.example.com;
+### 1. Start the server on your remote machine
 
-       location / {
-           proxy_pass http://localhost:8080;
-           proxy_http_version 1.1;
-           proxy_set_header Upgrade $http_upgrade;
-           proxy_set_header Connection "upgrade";
-       }
-   }
-   ```
+```bash
+ssh your-server
+cd /path/to/notebooks
+mrmd-server -p 8080
+```
 
-3. Access from anywhere:
-   ```
-   https://notebooks.example.com?token=YOUR_TOKEN
-   ```
+### 2. Set up HTTPS with nginx (recommended)
 
-### Share with Collaborators
+```nginx
+server {
+    listen 443 ssl;
+    server_name notebooks.example.com;
 
-Just share the URL with the token:
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location / {
+        proxy_pass http://localhost:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+    }
+}
+```
+
+### 3. Access from anywhere
+
+```
+https://notebooks.example.com?token=YOUR_TOKEN
+```
+
+---
+
+## Sharing & Collaboration
+
+Share the URL (including the token) with collaborators:
+
 ```
 https://your-server.com?token=abc123xyz
 ```
 
-Collaborators get:
-- Real-time collaborative editing (Yjs)
-- Code execution (via the server)
-- Same UI as local Electron app
+Everyone with the URL gets:
+- Real-time collaborative editing
+- Code execution on your server
+- Full MRMD features
+
+---
 
 ## Architecture
 
-mrmd-server provides an HTTP API that mirrors Electron's IPC interface:
+MRMD Server mirrors the Electron app's IPC interface as an HTTP API:
 
-| Electron (IPC) | mrmd-server (HTTP) |
+| Electron (IPC) | MRMD Server (HTTP) |
 |----------------|-------------------|
 | `electronAPI.project.get(path)` | `GET /api/project?path=...` |
 | `electronAPI.file.write(path, content)` | `POST /api/file/write` |
 | `electronAPI.session.forDocument(path)` | `POST /api/session/for-document` |
 | `ipcRenderer.on('project:changed', cb)` | WebSocket `/events` |
 
-The browser loads `http-shim.js` which creates a `window.electronAPI` object that makes HTTP calls instead of IPC calls. The existing UI code works unchanged.
+The browser loads an HTTP shim that creates `window.electronAPI` making HTTP calls instead of IPC. The UI code works unchanged.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      mrmd-server                             │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │ Express     │  │ mrmd-sync   │  │ mrmd-       │         │
+│  │ HTTP API    │  │ (Yjs)       │  │ python/bash │         │
+│  └─────────────┘  └─────────────┘  └─────────────┘         │
+└─────────────────────────────────────────────────────────────┘
+         │                  │                  │
+    HTTP/REST          WebSocket           Execution
+```
+
+---
 
 ## API Reference
 
 ### Authentication
 
-All API endpoints (except `/health` and `/auth/validate`) require authentication.
-
-Provide token via:
+All `/api/*` endpoints require authentication. Provide token via:
 - Query parameter: `?token=xxx`
 - Header: `Authorization: Bearer xxx`
 - Header: `X-Token: xxx`
 
-### Endpoints
+### Core Endpoints
 
-#### System
-- `GET /api/system/home` - Get home directory
-- `GET /api/system/recent` - Get recent files/venvs
-- `GET /api/system/ai` - Get AI server info
-- `POST /api/system/discover-venvs` - Start venv discovery
-
-#### Project
-- `GET /api/project?path=...` - Get project info
-- `POST /api/project` - Create project
-- `GET /api/project/nav?root=...` - Get navigation tree
-- `POST /api/project/watch` - Watch for changes
-- `POST /api/project/unwatch` - Stop watching
-
-#### Session
-- `GET /api/session` - List sessions
-- `POST /api/session` - Start session
-- `DELETE /api/session/:name` - Stop session
-- `POST /api/session/for-document` - Get/create session for document
-
-#### Bash
-- Same as Session, at `/api/bash/*`
-
-#### File
-- `GET /api/file/scan` - Scan for files
-- `POST /api/file/create` - Create file
-- `POST /api/file/create-in-project` - Create with FSML ordering
-- `POST /api/file/move` - Move/rename
-- `POST /api/file/reorder` - Drag-drop reorder
-- `DELETE /api/file?path=...` - Delete file
-- `GET /api/file/read?path=...` - Read file
-- `POST /api/file/write` - Write file
-
-#### Asset
-- `GET /api/asset` - List assets
-- `POST /api/asset/save` - Upload asset
-- `GET /api/asset/relative-path` - Calculate relative path
-- `GET /api/asset/orphans` - Find orphaned assets
-- `DELETE /api/asset` - Delete asset
-
-#### Runtime
-- `GET /api/runtime` - List runtimes
-- `DELETE /api/runtime/:id` - Kill runtime
-- `POST /api/runtime/:id/attach` - Attach to runtime
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Health check (no auth) |
+| `GET /auth/validate?token=xxx` | Validate token (no auth) |
+| `GET /api/project?path=...` | Get project info |
+| `GET /api/file/read?path=...` | Read file |
+| `POST /api/file/write` | Write file |
+| `POST /api/session/for-document` | Get/create session for document |
+| `GET /api/runtime` | List active runtimes |
+| `DELETE /api/runtime/:id` | Kill a runtime |
 
 ### WebSocket Events
 
-Connect to `/events?token=xxx` to receive push events:
+Connect to `/events?token=xxx` for real-time updates:
 
 ```javascript
 const ws = new WebSocket('wss://server.com/events?token=xxx');
 ws.onmessage = (e) => {
   const { event, data } = JSON.parse(e.data);
-  // event: 'project:changed', 'venv-found', 'sync-server-died', etc.
+  // Events: 'project:changed', 'venv-found', 'sync-server-died', etc.
 };
 ```
 
-## Security Considerations
+---
 
-1. **Always use HTTPS** in production (use nginx/caddy as reverse proxy)
-2. **Keep tokens secret** - treat them like passwords
-3. **Use `--no-auth` only for local development**
-4. **Rotate tokens** if compromised
+## Security
+
+1. **Always use HTTPS** in production — use nginx, caddy, or a cloud load balancer
+2. **Keep tokens secret** — treat them like passwords
+3. **Never use `--no-auth` on public networks**
+4. **Rotate tokens** if you suspect they're compromised
+
+---
 
 ## Limitations
 
-Some Electron features can't work in browser:
+Some desktop features don't work in browser mode:
 
 | Feature | Browser Behavior |
 |---------|------------------|
-| `shell.showItemInFolder` | Returns path (can't open Finder) |
-| `shell.openPath` | Returns path (can't open local apps) |
-| Native titlebar | Standard browser chrome |
-| Offline | Requires server connection |
+| "Show in Finder" | Returns path (can't open native file browser) |
+| Native window controls | Standard browser chrome |
+| Offline mode | Requires server connection |
+
+---
 
 ## Development
 
 ```bash
+# Clone the monorepo
+git clone https://github.com/MaximeRivest/mrmd-packages.git
+cd mrmd-packages/mrmd-server
+
+# Install dependencies
+npm install
+
 # Run in dev mode
 npm run dev
-
-# The server will:
-# - Watch for file changes
-# - Auto-restart on changes
 ```
+
+---
+
+## Related Projects
+
+| Project | Description |
+|---------|-------------|
+| [MRMD Electron](https://github.com/MaximeRivest/mrmd-electron) | Desktop app (macOS, Windows, Linux) |
+| [mrmd-python](https://github.com/MaximeRivest/mrmd-python) | Python execution runtime |
+| [mrmd-editor](https://github.com/MaximeRivest/mrmd-editor) | CodeMirror-based editor component |
+| [mrmd-sync](https://github.com/MaximeRivest/mrmd-sync) | Yjs collaboration server |
+
+---
 
 ## License
 
-MIT
+MIT License. See [LICENSE](LICENSE) for details.
+
+---
+
+<p align="center">
+  <b>MRMD Server</b> — Your notebooks, anywhere.
+</p>

@@ -128,26 +128,10 @@ async function main() {
 
   await server.start();
 
-  // Start mrmd-sync if available
-  try {
-    const syncPath = path.join(packageDir, '..', 'mrmd-sync', 'bin', 'cli.js');
-    await fs.access(syncPath);
-
-    console.log('  Starting mrmd-sync...');
-    const syncProc = spawn('node', [syncPath, '--port', '4444', options.projectDir], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    syncProc.stdout.on('data', (data) => {
-      if (data.toString().includes('Server started')) {
-        console.log(`  Sync:       ws://localhost:4444`);
-      }
-    });
-
-    server.context.syncProcess = syncProc;
-  } catch {
-    console.log('  Sync:       (mrmd-sync not found, start manually)');
-  }
+  // Sync servers are now started dynamically per-project when files are opened
+  // via the sync-manager.js acquireSyncServer() function
+  console.log('  Sync:       (dynamic per-project)');
+  console.log('');
 
   // Keep running
   console.log('');

@@ -1,13 +1,11 @@
 /**
  * Asset API routes
  *
- * Mirrors electronAPI.asset.*
+ * Mirrors electronAPI.asset.* using AssetService from mrmd-electron
  */
 
 import { Router } from 'express';
 import path from 'path';
-import fs from 'fs/promises';
-import crypto from 'crypto';
 import multer from 'multer';
 
 // Configure multer for file uploads
@@ -22,6 +20,7 @@ const upload = multer({
  */
 export function createAssetRoutes(ctx) {
   const router = Router();
+  const { assetService } = ctx;
 
   /**
    * GET /api/asset?projectRoot=...
@@ -31,33 +30,8 @@ export function createAssetRoutes(ctx) {
   router.get('/', async (req, res) => {
     try {
       const projectRoot = req.query.projectRoot || ctx.projectDir;
-      const assetsDir = path.join(projectRoot, '_assets');
-
-      try {
-        const files = await fs.readdir(assetsDir);
-        const assets = [];
-
-        for (const file of files) {
-          if (file.startsWith('.')) continue;
-
-          const filePath = path.join(assetsDir, file);
-          const stat = await fs.stat(filePath);
-
-          assets.push({
-            name: file,
-            path: `_assets/${file}`,
-            size: stat.size,
-            modified: stat.mtime.toISOString(),
-          });
-        }
-
-        res.json(assets);
-      } catch (err) {
-        if (err.code === 'ENOENT') {
-          return res.json([]);
-        }
-        throw err;
-      }
+      const assets = await assetService.list(projectRoot);
+      res.json(assets);
     } catch (err) {
       console.error('[asset:list]', err);
       res.status(500).json({ error: err.message });
@@ -94,36 +68,9 @@ export function createAssetRoutes(ctx) {
         return res.status(400).json({ error: 'No file provided' });
       }
 
-      const assetsDir = path.join(projectRoot, '_assets');
-      await fs.mkdir(assetsDir, { recursive: true });
-
-      // Compute hash for deduplication
-      const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex').slice(0, 8);
-      const ext = path.extname(filename);
-      const base = path.basename(filename, ext);
-
-      // Check if identical file already exists
-      const existingFiles = await fs.readdir(assetsDir).catch(() => []);
-      for (const existing of existingFiles) {
-        if (existing.startsWith(hash + '-')) {
-          // Found duplicate
-          return res.json({
-            path: `_assets/${existing}`,
-            deduplicated: true,
-          });
-        }
-      }
-
-      // Save with hash prefix
-      const finalName = `${hash}-${base}${ext}`;
-      const finalPath = path.join(assetsDir, finalName);
-
-      await fs.writeFile(finalPath, fileBuffer);
-
-      res.json({
-        path: `_assets/${finalName}`,
-        deduplicated: false,
-      });
+      // AssetService.save expects a file-like object
+      const result = await assetService.save(projectRoot, fileBuffer, filename);
+      res.json(result);
     } catch (err) {
       console.error('[asset:save]', err);
       res.status(500).json({ error: err.message });
@@ -162,40 +109,8 @@ export function createAssetRoutes(ctx) {
   router.get('/orphans', async (req, res) => {
     try {
       const projectRoot = req.query.projectRoot || ctx.projectDir;
-      const assetsDir = path.join(projectRoot, '_assets');
-
-      // Get all assets
-      let assetFiles;
-      try {
-        assetFiles = await fs.readdir(assetsDir);
-      } catch {
-        return res.json([]);
-      }
-
-      // Get all markdown files
-      const mdFiles = await scanMarkdownFiles(projectRoot);
-
-      // Read all markdown content and find referenced assets
-      const referencedAssets = new Set();
-      for (const mdFile of mdFiles) {
-        try {
-          const content = await fs.readFile(mdFile, 'utf-8');
-          // Find asset references (images, links)
-          const matches = content.matchAll(/!\[.*?\]\(([^)]+)\)|href="([^"]+)"/g);
-          for (const match of matches) {
-            const ref = match[1] || match[2];
-            if (ref && ref.includes('_assets/')) {
-              const assetName = path.basename(ref);
-              referencedAssets.add(assetName);
-            }
-          }
-        } catch {}
-      }
-
-      // Find orphans
-      const orphans = assetFiles.filter(f => !f.startsWith('.') && !referencedAssets.has(f));
-
-      res.json(orphans.map(f => `_assets/${f}`));
+      const orphans = await assetService.findOrphans(projectRoot);
+      res.json(orphans);
     } catch (err) {
       console.error('[asset:orphans]', err);
       res.status(500).json({ error: err.message });
@@ -216,14 +131,7 @@ export function createAssetRoutes(ctx) {
         return res.status(400).json({ error: 'assetPath required' });
       }
 
-      const fullPath = path.join(projectRoot, assetPath);
-
-      // Security check
-      if (!fullPath.startsWith(path.resolve(projectRoot))) {
-        return res.status(400).json({ error: 'Invalid path' });
-      }
-
-      await fs.unlink(fullPath);
+      await assetService.delete(projectRoot, assetPath);
       res.json({ success: true });
     } catch (err) {
       console.error('[asset:delete]', err);
@@ -253,31 +161,4 @@ export function createAssetRoutes(ctx) {
   });
 
   return router;
-}
-
-/**
- * Recursively scan for markdown files
- */
-async function scanMarkdownFiles(dir, maxDepth = 6, currentDepth = 0) {
-  if (currentDepth > maxDepth) return [];
-
-  const files = [];
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-
-  for (const entry of entries) {
-    if (entry.name.startsWith('.')) continue;
-    if (entry.name === 'node_modules') continue;
-    if (entry.name === '_assets') continue;
-
-    const fullPath = path.join(dir, entry.name);
-
-    if (entry.isDirectory()) {
-      const subFiles = await scanMarkdownFiles(fullPath, maxDepth, currentDepth + 1);
-      files.push(...subFiles);
-    } else if (entry.name.endsWith('.md')) {
-      files.push(fullPath);
-    }
-  }
-
-  return files;
 }

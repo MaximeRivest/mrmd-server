@@ -1,15 +1,20 @@
 /**
  * Express server that mirrors Electron's electronAPI
+ *
+ * Uses services from mrmd-electron for full feature parity.
  */
 
 import express from 'express';
 import cors from 'cors';
 import { createServer as createHttpServer } from 'http';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, WebSocket as WsClient } from 'ws';
 import path from 'path';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
 
 import { createAuthMiddleware, generateToken } from './auth.js';
 import { EventBus } from './events.js';
@@ -23,7 +28,35 @@ import { createRuntimeRoutes } from './api/runtime.js';
 import { createJuliaRoutes } from './api/julia.js';
 import { createPtyRoutes } from './api/pty.js';
 import { createNotebookRoutes } from './api/notebook.js';
+import { createSettingsRoutes } from './api/settings.js';
+import { createRRoutes } from './api/r.js';
 import { setupWebSocket } from './websocket.js';
+
+// Import services from mrmd-electron (pure Node.js, no Electron deps)
+import {
+  ProjectService,
+  SessionService,
+  BashSessionService,
+  RSessionService,
+  JuliaSessionService,
+  PtySessionService,
+  FileService,
+  AssetService,
+  SettingsService,
+} from './services.js';
+
+// Import sync manager for dynamic project handling
+import {
+  acquireSyncServer,
+  releaseSyncServer,
+  getSyncServer,
+  listSyncServers,
+  stopAllSyncServers,
+  onSyncDeath,
+} from './sync-manager.js';
+
+// Import AI service for mrmd-ai server management
+import { stopAiServer } from './ai-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -59,27 +92,64 @@ export async function createServer(config) {
     aiPort = 51790,
   } = config;
 
+  // projectDir is optional now - dynamic project detection is supported
   if (!projectDir) {
-    throw new Error('projectDir is required');
+    console.log('[server] No projectDir specified - dynamic project detection enabled');
   }
 
   const app = express();
   const server = createHttpServer(app);
   const eventBus = new EventBus();
 
+  // Instantiate services from mrmd-electron
+  const projectService = new ProjectService();
+  const sessionService = new SessionService();
+  const bashSessionService = new BashSessionService();
+  const rSessionService = new RSessionService();
+  const juliaSessionService = new JuliaSessionService();
+  const ptySessionService = new PtySessionService();
+  const fileService = new FileService();
+  const assetService = new AssetService();
+  const settingsService = new SettingsService();
+
   // Service context passed to all route handlers
   const context = {
-    projectDir: path.resolve(projectDir),
+    // Legacy: fixed project dir (for backwards compat, may be null)
+    projectDir: projectDir ? path.resolve(projectDir) : null,
     syncPort,
     pythonPort,
     aiPort,
     eventBus,
-    // These will be populated by services
+
+    // Services from mrmd-electron
+    projectService,
+    sessionService,
+    bashSessionService,
+    rSessionService,
+    juliaSessionService,
+    ptySessionService,
+    fileService,
+    assetService,
+    settingsService,
+
+    // Sync server management (dynamic per-project)
+    acquireSyncServer,
+    releaseSyncServer,
+    getSyncServer,
+    listSyncServers,
+
+    // Legacy: process tracking (kept for backwards compat)
     syncProcess: null,
     pythonProcess: null,
     monitorProcesses: new Map(),
     watchers: new Map(),
+    pythonReady: false,
   };
+
+  // Register for sync death notifications and broadcast via WebSocket
+  onSyncDeath((message) => {
+    eventBus.emit('sync-server-died', message);
+  });
 
   // Middleware
   app.use(cors({
@@ -118,6 +188,62 @@ export async function createServer(config) {
   app.use('/api/julia', createJuliaRoutes(context));
   app.use('/api/pty', createPtyRoutes(context));
   app.use('/api/notebook', createNotebookRoutes(context));
+  app.use('/api/settings', createSettingsRoutes(context));
+  app.use('/api/r', createRRoutes(context));
+
+  // Proxy for localhost services (bash, pty, ai, etc.)
+  // Routes /proxy/:port/* to http://127.0.0.1:port/*
+  // IMPORTANT: Forwards X-Api-Key-* headers for AI providers
+  app.use('/proxy/:port', async (req, res) => {
+    const { port } = req.params;
+    const targetPath = req.url; // Includes query string
+    const targetUrl = `http://127.0.0.1:${port}${targetPath}`;
+
+    // Build headers - forward all relevant headers including API keys
+    const forwardHeaders = {
+      'Content-Type': req.headers['content-type'] || 'application/json',
+      'Accept': req.headers['accept'] || '*/*',
+    };
+
+    // Forward X-* headers (API keys, juice level, model override, etc.)
+    // Note: Express lowercases header names, but HTTP headers are case-insensitive
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (key.toLowerCase().startsWith('x-')) {
+        forwardHeaders[key] = value;
+      }
+    }
+
+    // Debug: log API key headers being forwarded
+    const apiKeyHeaders = Object.keys(forwardHeaders).filter(k => k.toLowerCase().includes('api-key'));
+    if (apiKeyHeaders.length > 0) {
+      console.log(`[proxy] Forwarding ${apiKeyHeaders.length} API key headers:`, apiKeyHeaders.map(k => `${k}=***${forwardHeaders[k]?.slice(-4)}`));
+    } else if (targetPath.includes('Predict')) {
+      console.log(`[proxy] WARNING: No API key headers found for AI request. Incoming headers:`, Object.keys(req.headers).filter(k => k.startsWith('x-')));
+    }
+
+    try {
+      const response = await fetch(targetUrl, {
+        method: req.method,
+        headers: forwardHeaders,
+        body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body),
+      });
+
+      // Forward response headers
+      res.status(response.status);
+      response.headers.forEach((value, key) => {
+        if (!['content-encoding', 'transfer-encoding', 'content-length'].includes(key.toLowerCase())) {
+          res.setHeader(key, value);
+        }
+      });
+
+      // Forward response body
+      const data = await response.text();
+      res.send(data);
+    } catch (err) {
+      console.error(`[proxy] Failed to proxy to ${targetUrl}:`, err.message);
+      res.status(502).json({ error: `Proxy error: ${err.message}` });
+    }
+  });
 
   // Serve http-shim.js
   app.get('/http-shim.js', (req, res) => {
@@ -131,9 +257,32 @@ export async function createServer(config) {
     // Serve mrmd-electron assets (fonts, icons)
     app.use('/assets', express.static(path.join(electronPath, 'assets')));
 
-    // Serve mrmd-editor dist
-    const editorDistPath = path.join(electronPath, '../mrmd-editor/dist');
-    app.use('/dist', express.static(editorDistPath));
+    // Serve mrmd-editor dist - check multiple locations
+    const editorDistCandidates = [
+      path.join(electronPath, 'editor'),  // Bundled in mrmd-electron (npm)
+      path.join(electronPath, '../mrmd-editor/dist'),  // Sibling (dev mode)
+    ];
+    for (const distPath of editorDistCandidates) {
+      if (existsSync(path.join(distPath, 'mrmd.iife.js'))) {
+        app.use('/mrmd-editor/dist', express.static(distPath));
+        app.use('/dist', express.static(distPath));
+        break;
+      }
+    }
+
+    // Serve node_modules for xterm, etc. - check multiple locations (npm hoisting)
+    const nodeModulesCandidates = [
+      path.join(electronPath, 'node_modules'),  // Direct dependency
+      path.join(electronPath, '..'),  // Hoisted to parent (npm installed)
+      path.join(__dirname, '../node_modules'),  // mrmd-server's node_modules
+      path.join(__dirname, '../../node_modules'),  // Hoisted further up
+    ];
+    for (const nmPath of nodeModulesCandidates) {
+      if (existsSync(path.join(nmPath, 'xterm'))) {
+        app.use('/node_modules', express.static(nmPath));
+        break;
+      }
+    }
 
     // Serve transformed index.html at root
     app.get('/', async (req, res) => {
@@ -144,6 +293,7 @@ export async function createServer(config) {
         // Transform for browser mode:
         // 1. Inject http-shim.js as first script in head
         // 2. Update CSP to allow HTTP connections to this server
+        // 3. Fix relative paths for HTTP serving
         html = transformIndexHtml(html, host, port);
 
         res.type('html').send(html);
@@ -163,9 +313,61 @@ export async function createServer(config) {
     app.use(express.static(staticDir));
   }
 
-  // WebSocket for push events
-  const wss = new WebSocketServer({ server, path: '/events' });
+  // WebSocket for push events (noServer to avoid duplicate upgrade handlers)
+  const wss = new WebSocketServer({ noServer: true });
   setupWebSocket(wss, eventBus, token, noAuth);
+
+  // WebSocket proxy for sync connections (remote browsers can't reach localhost)
+  const syncWss = new WebSocketServer({ noServer: true });
+
+  // Single upgrade handler for all WebSocket connections
+  server.on('upgrade', (request, socket, head) => {
+    const url = new URL(request.url, 'http://localhost');
+
+    // Handle /events normally
+    if (url.pathname === '/events') {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+      return;
+    }
+
+    // Handle /sync/:port/:path - proxy to local server (sync, pty, etc.)
+    const syncMatch = url.pathname.match(/^\/sync\/(\d+)\/(.+)$/);
+    if (syncMatch) {
+      const [, syncPort, pathPart] = syncMatch;
+      // Preserve query string for PTY sessions
+      const targetUrl = `ws://127.0.0.1:${syncPort}/${pathPart}${url.search}`;
+
+      // Create connection to local sync server
+      const upstream = new WsClient(targetUrl);
+
+      upstream.on('open', () => {
+        syncWss.handleUpgrade(request, socket, head, (clientWs) => {
+          // Bidirectional proxy - preserve message type (binary/text)
+          clientWs.on('message', (data, isBinary) => {
+            upstream.send(data, { binary: isBinary });
+          });
+          upstream.on('message', (data, isBinary) => {
+            clientWs.send(data, { binary: isBinary });
+          });
+          clientWs.on('close', () => upstream.close());
+          upstream.on('close', () => clientWs.close());
+          clientWs.on('error', () => upstream.close());
+          upstream.on('error', () => clientWs.close());
+        });
+      });
+
+      upstream.on('error', (err) => {
+        console.error(`[sync-proxy] Failed to connect to ${targetUrl}:`, err.message);
+        socket.destroy();
+      });
+      return;
+    }
+
+    // Unknown upgrade request
+    socket.destroy();
+  });
 
   return {
     app,
@@ -211,7 +413,36 @@ export async function createServer(config) {
         await watcher.close();
       }
 
-      // Kill child processes
+      // Stop all sync servers
+      stopAllSyncServers();
+
+      // Stop AI server
+      stopAiServer();
+
+      // Stop all sessions via services (if they have shutdown methods)
+      try {
+        if (typeof sessionService.shutdown === 'function') {
+          await sessionService.shutdown();
+        }
+      } catch (e) {
+        console.warn('[server] Error stopping sessions:', e.message);
+      }
+      try {
+        if (typeof bashSessionService.shutdown === 'function') {
+          await bashSessionService.shutdown();
+        }
+      } catch (e) {
+        console.warn('[server] Error stopping bash sessions:', e.message);
+      }
+      try {
+        if (typeof ptySessionService.shutdown === 'function') {
+          await ptySessionService.shutdown();
+        }
+      } catch (e) {
+        console.warn('[server] Error stopping pty sessions:', e.message);
+      }
+
+      // Legacy: kill child processes
       if (context.syncProcess) {
         context.syncProcess.kill();
       }
@@ -238,14 +469,25 @@ export async function createServer(config) {
  */
 function findElectronDir(fromDir) {
   const candidates = [
+    // Development: sibling directories
     path.join(fromDir, '../../mrmd-electron'),
     path.join(fromDir, '../../../mrmd-electron'),
     path.join(process.cwd(), '../mrmd-electron'),
     path.join(process.cwd(), 'mrmd-electron'),
-    // In npx/installed context, it might be in node_modules
+    // npm/npx: node_modules relative to mrmd-server package
+    path.join(fromDir, '../node_modules/mrmd-electron'),
     path.join(fromDir, '../../node_modules/mrmd-electron'),
+    // npm/npx: node_modules in cwd
     path.join(process.cwd(), 'node_modules/mrmd-electron'),
   ];
+
+  // Also try require.resolve to find the package
+  try {
+    const electronPkg = path.dirname(require.resolve('mrmd-electron/package.json'));
+    candidates.unshift(electronPkg);
+  } catch (e) {
+    // mrmd-electron not found via require, continue with path search
+  }
 
   for (const candidate of candidates) {
     const indexPath = path.join(candidate, 'index.html');
@@ -261,6 +503,7 @@ function findElectronDir(fromDir) {
  * Transform index.html for browser mode
  * - Inject http-shim.js as first script
  * - Update CSP to allow HTTP connections
+ * - Fix relative paths for HTTP serving
  */
 function transformIndexHtml(html, host, port) {
   // 1. Inject http-shim.js right after <head>
@@ -282,6 +525,19 @@ function transformIndexHtml(html, host, port) {
   // 3. Remove Electron-specific CSS (window drag regions)
   html = html.replace(/-webkit-app-region:\s*drag;/g, '/* -webkit-app-region: drag; */');
   html = html.replace(/-webkit-app-region:\s*no-drag;/g, '/* -webkit-app-region: no-drag; */');
+
+  // 4. Fix relative paths for HTTP serving
+  // ../mrmd-editor/dist/ -> /mrmd-editor/dist/
+  html = html.replace(/src=["']\.\.\/mrmd-editor\//g, 'src="/mrmd-editor/');
+  html = html.replace(/href=["']\.\.\/mrmd-editor\//g, 'href="/mrmd-editor/');
+
+  // ./node_modules/ -> /node_modules/
+  html = html.replace(/src=["']\.\/node_modules\//g, 'src="/node_modules/');
+  html = html.replace(/href=["']\.\/node_modules\//g, 'href="/node_modules/');
+
+  // ./assets/ -> /assets/
+  html = html.replace(/src=["']\.\/assets\//g, 'src="/assets/');
+  html = html.replace(/href=["']\.\/assets\//g, 'href="/assets/');
 
   return html;
 }
