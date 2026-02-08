@@ -260,7 +260,10 @@
 
     readPreview: (filePath, lines) =>
       GET(`/api/file/preview?path=${encodeURIComponent(filePath)}&lines=${lines || 40}`)
-        .then(r => r.content),
+        .then((r) => ({
+          success: r?.success !== false,
+          preview: typeof r?.preview === 'string' ? r.preview : (r?.content || ''),
+        })),
 
     getFileInfo: (filePath) =>
       GET(`/api/file/info?path=${encodeURIComponent(filePath)}`),
