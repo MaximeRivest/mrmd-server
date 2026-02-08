@@ -83,7 +83,7 @@ export async function createServer(config) {
     port = 8080,
     host = '0.0.0.0',
     projectDir,
-    token = generateToken(),
+    token: configuredToken,
     noAuth = false,
     staticDir,
     electronDir,
@@ -91,6 +91,12 @@ export async function createServer(config) {
     pythonPort = 8000,
     aiPort = 51790,
   } = config;
+  const token = (
+    typeof configuredToken === 'string' &&
+    configuredToken.trim() !== '' &&
+    configuredToken !== 'null' &&
+    configuredToken !== 'undefined'
+  ) ? configuredToken : generateToken();
 
   // projectDir is optional now - dynamic project detection is supported
   if (!projectDir) {
@@ -111,6 +117,10 @@ export async function createServer(config) {
   const fileService = new FileService();
   const assetService = new AssetService();
   const settingsService = new SettingsService();
+
+  // Import API keys from environment variables into settings
+  // This lets users run: ANTHROPIC_API_KEY=sk-ant-... mrmd-server
+  importApiKeysFromEnv(settingsService);
 
   // Service context passed to all route handlers
   const context = {
@@ -540,6 +550,40 @@ function transformIndexHtml(html, host, port) {
   html = html.replace(/href=["']\.\/assets\//g, 'href="/assets/');
 
   return html;
+}
+
+/**
+ * Import API keys from environment variables into settings.
+ * Only imports if the env var is set and the settings key is empty.
+ * This allows: ANTHROPIC_API_KEY=sk-ant-... mrmd-server
+ */
+function importApiKeysFromEnv(settingsService) {
+  const envMapping = {
+    anthropic: 'ANTHROPIC_API_KEY',
+    openai: 'OPENAI_API_KEY',
+    groq: 'GROQ_API_KEY',
+    gemini: 'GEMINI_API_KEY',
+    openrouter: 'OPENROUTER_API_KEY',
+  };
+
+  settingsService.load();
+  let imported = 0;
+
+  for (const [provider, envVar] of Object.entries(envMapping)) {
+    const envValue = process.env[envVar];
+    if (envValue) {
+      const existing = settingsService.getApiKey(provider);
+      if (!existing) {
+        settingsService.setApiKey(provider, envValue);
+        console.log(`[server] Imported ${envVar} from environment into settings`);
+        imported++;
+      }
+    }
+  }
+
+  if (imported > 0) {
+    console.log(`[server] Imported ${imported} API key(s) from environment`);
+  }
 }
 
 /**

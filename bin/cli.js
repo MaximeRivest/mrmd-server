@@ -23,7 +23,7 @@ function parseArgs(args) {
   const options = {
     port: 8080,
     host: '0.0.0.0',
-    token: null,
+    token: undefined,
     noAuth: false,
     projectDir: '.',
   };

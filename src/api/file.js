@@ -58,10 +58,10 @@ export function createFileRoutes(ctx) {
       }
 
       const fullPath = resolvePath(ctx.projectDir, filePath);
-      const result = await fileService.createFile(fullPath, content);
+      await fileService.createFile(fullPath, content);
 
       ctx.eventBus.projectChanged(ctx.projectDir);
-      res.json({ success: true, path: result });
+      res.json({ success: true, path: fullPath });
     } catch (err) {
       if (err.message?.includes('already exists')) {
         return res.status(409).json({ error: 'File already exists' });
@@ -89,7 +89,7 @@ export function createFileRoutes(ctx) {
       ctx.eventBus.projectChanged(root);
       res.json({
         success: true,
-        path: result.relativePath,
+        path: result,
       });
     } catch (err) {
       console.error('[file:createInProject]', err);
@@ -239,7 +239,7 @@ export function createFileRoutes(ctx) {
       const content = await fileService.read(fullPath);
       const previewLines = content.split('\n').slice(0, lines).join('\n');
 
-      res.json({ success: true, content: previewLines });
+      res.json({ success: true, content: previewLines, preview: previewLines });
     } catch (err) {
       if (err.code === 'ENOENT') {
         return res.status(404).json({ success: false, error: 'File not found' });
