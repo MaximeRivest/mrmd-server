@@ -1,0 +1,19 @@
+name = "MrmdJulia"
+uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+version = "0.1.0"
+authors = ["MRMD Contributors"]
+
+[deps]
+HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+StructTypes = "856f2bd8-1eba-4b0a-8007-ebc267875bd4"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
+Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
+REPL = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
+
+[compat]
+HTTP = "1"
+JSON3 = "1"
+StructTypes = "1"
+julia = "1.8"

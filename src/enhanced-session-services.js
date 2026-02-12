@@ -100,8 +100,8 @@ function patchStart(lang, service, upstreamStart, spawnOpts) {
     console.log(`[${lang}-session] Starting "${config.name}" on port ${port} with cwd ${config.cwd}...`);
     console.log(`[${lang}-session] Using package: ${packageDir}`);
 
-    const args = spawnOpts.makeArgs(cliScript, port, config);
-    const env = spawnOpts.makeEnv ? spawnOpts.makeEnv() : { ...process.env };
+    const args = spawnOpts.makeArgs(cliScript, port, config, packageDir);
+    const env = spawnOpts.makeEnv ? spawnOpts.makeEnv(packageDir) : { ...process.env };
     const interpreter = spawnOpts.interpreterPath?.(service) || args.shift();
 
     const proc = spawn(interpreter, args, {
@@ -114,7 +114,9 @@ function patchStart(lang, service, upstreamStart, spawnOpts) {
     proc.stdout.on('data', (d) => console.log(`[${lang}-session:${config.name}]`, d.toString().trim()));
     proc.stderr.on('data', (d) => console.error(`[${lang}-session:${config.name}]`, d.toString().trim()));
 
-    await waitForPort(port);
+    // Julia needs more time to start (JIT compilation)
+    const portTimeout = lang === 'julia' ? 60000 : 10000;
+    await waitForPort(port, { timeout: portTimeout });
 
     const info = {
       name: config.name,
@@ -208,12 +210,16 @@ export class JuliaSessionService extends UpstreamJuliaSessionService {
 
     this.start = patchStart('julia', this, upstreamStart, {
       interpreterPath: (svc) => svc.juliaPath,
-      makeArgs: (cliScript, port, config) => [
+      makeArgs: (cliScript, port, config, packageDir) => [
+        '--project=' + packageDir,
         cliScript,
         '--port', port.toString(),
         '--cwd', config.cwd,
       ],
-      makeEnv: () => ({ ...process.env }),
+      makeEnv: (packageDir) => ({
+        ...process.env,
+        JULIA_PROJECT: packageDir,
+      }),
     });
   }
 }

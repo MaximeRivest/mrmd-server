@@ -1,0 +1,109 @@
+#!/usr/bin/env julia
+
+# mrmd-julia CLI
+# Start the MRP server for Julia runtime
+#
+# Usage:
+#   mrmd-julia [--port PORT] [--host HOST] [--cwd DIR] [--assets-dir DIR]
+#
+# Environment variables:
+#   MRMD_JULIA_PORT - Port to listen on (default: 8000)
+#   MRMD_JULIA_HOST - Host to bind to (default: 127.0.0.1)
+#   MRMD_JULIA_CWD  - Working directory (default: current directory)
+
+# Activate the project
+project_dir = dirname(dirname(@__FILE__))
+
+using Pkg
+Pkg.activate(project_dir; io=devnull)
+
+# Now load the module
+using MrmdJulia
+
+function parse_args()
+    port = 8000
+    host = "127.0.0.1"
+    cwd = pwd()
+    assets_dir = ""
+
+    # Parse command line arguments
+    i = 1
+    while i <= length(ARGS)
+        arg = ARGS[i]
+        if arg == "--port" || arg == "-p"
+            i += 1
+            port = parse(Int, ARGS[i])
+        elseif arg == "--host" || arg == "-H"
+            i += 1
+            host = ARGS[i]
+        elseif arg == "--cwd" || arg == "-c"
+            i += 1
+            cwd = ARGS[i]
+        elseif arg == "--assets-dir" || arg == "-a"
+            i += 1
+            assets_dir = ARGS[i]
+        elseif arg == "--help" || arg == "-h"
+            println("""
+mrmd-julia - MRMD Runtime Protocol server for Julia
+
+Usage:
+  mrmd-julia [options]
+
+Options:
+  --port, -p PORT      Port to listen on (default: 8000)
+  --host, -H HOST      Host to bind to (default: 127.0.0.1)
+  --cwd, -c DIR        Working directory (default: current directory)
+  --assets-dir, -a DIR Directory for saving assets (default: cwd/.mrmd-assets)
+  --help, -h           Show this help message
+
+Environment variables:
+  MRMD_JULIA_PORT      Port to listen on
+  MRMD_JULIA_HOST      Host to bind to
+  MRMD_JULIA_CWD       Working directory
+""")
+            exit(0)
+        elseif arg == "--version" || arg == "-v"
+            println("mrmd-julia 0.1.0")
+            exit(0)
+        else
+            @warn "Unknown argument: $arg"
+        end
+        i += 1
+    end
+
+    # Environment variable overrides (lower priority than CLI args)
+    if haskey(ENV, "MRMD_JULIA_PORT") && port == 8000
+        port = parse(Int, ENV["MRMD_JULIA_PORT"])
+    end
+    if haskey(ENV, "MRMD_JULIA_HOST") && host == "127.0.0.1"
+        host = ENV["MRMD_JULIA_HOST"]
+    end
+    if haskey(ENV, "MRMD_JULIA_CWD") && cwd == pwd()
+        cwd = ENV["MRMD_JULIA_CWD"]
+    end
+
+    if isempty(assets_dir)
+        assets_dir = joinpath(cwd, ".mrmd-assets")
+    end
+
+    return (port=port, host=host, cwd=cwd, assets_dir=assets_dir)
+end
+
+function main()
+    args = parse_args()
+
+    println("Starting mrmd-julia on $(args.host):$(args.port)")
+    println("Working directory: $(args.cwd)")
+    println("Assets directory: $(args.assets_dir)")
+    println("Julia version: $(VERSION)")
+    flush(stdout)
+
+    start_server(
+        port=args.port,
+        host=args.host,
+        cwd=args.cwd,
+        assets_dir=args.assets_dir
+    )
+end
+
+main()
