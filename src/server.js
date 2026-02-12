@@ -265,8 +265,8 @@ export async function createServer(config) {
         }
       });
 
-      // Forward response body
-      const data = await response.text();
+      // Forward response body as raw bytes (important for binary assets like PNGs)
+      const data = Buffer.from(await response.arrayBuffer());
       res.send(data);
     } catch (err) {
       console.error(`[proxy] Failed to proxy to ${targetUrl}:`, err.message);
