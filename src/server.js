@@ -40,13 +40,17 @@ import {
   ProjectService,
   SessionService,
   BashSessionService,
-  RSessionService,
-  JuliaSessionService,
   PtySessionService,
   FileService,
   AssetService,
   SettingsService,
 } from './services.js';
+
+// Enhanced session services: support vendor-bundled, env-override, and remote runtimes
+import {
+  RSessionService,
+  JuliaSessionService,
+} from './enhanced-session-services.js';
 
 // Import sync manager for dynamic project handling
 import {

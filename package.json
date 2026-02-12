@@ -11,6 +11,7 @@
     "src",
     "bin",
     "static",
+    "vendor",
     "README.md"
   ],
   "scripts": {

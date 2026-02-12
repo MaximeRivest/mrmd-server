@@ -1,0 +1,20 @@
+Package: mrmdr
+Title: MRP (MRMD Runtime Protocol) Server for R
+Version: 0.1.0
+Authors@R:
+    person("MRMD Team", , , "team@mrmd.dev", role = c("aut", "cre"))
+Description: A HTTP server implementing the MRP (MRMD Runtime Protocol) for R,
+    enabling notebook-style code execution with streaming output, plot capture,
+    variable inspection, and interactive input support.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.2.3
+Imports:
+    httpuv (>= 1.6.0),
+    jsonlite (>= 1.8.0),
+    evaluate (>= 0.20),
+    later (>= 1.3.0)
+Suggests:
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3

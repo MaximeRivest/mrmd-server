@@ -1,0 +1,79 @@
+#!/usr/bin/env Rscript
+#
+# mrmd-r: MRP (MRMD Runtime Protocol) server for R
+#
+# Usage:
+#   mrmd-r [--host HOST] [--port PORT] [--cwd PATH]
+#
+# Example:
+#   mrmd-r --port 8001 --cwd /path/to/project
+
+# Define null-coalescing operator first (needed throughout)
+`%||%` <- function(a, b) if (is.null(a)) b else a
+
+# Get script directory
+get_script_dir <- function() {
+  # Try different methods to find the script location
+
+  # Method 1: commandArgs
+  args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep("^--file=", args, value = TRUE)
+  if (length(file_arg) > 0) {
+    script_path <- sub("^--file=", "", file_arg[1])
+    return(dirname(normalizePath(script_path, mustWork = FALSE)))
+  }
+
+  # Method 2: sys.frame (when sourced)
+  for (i in seq_len(sys.nframe())) {
+    ofile <- tryCatch(sys.frame(i)$ofile, error = function(e) NULL)
+    if (!is.null(ofile)) {
+      return(dirname(normalizePath(ofile, mustWork = FALSE)))
+    }
+  }
+
+  # Fallback
+  return(".")
+}
+
+# Find and load the package
+# First try as installed package, then as local development
+loaded <- tryCatch({
+  library(mrmdr, quietly = TRUE)
+  TRUE
+}, error = function(e) FALSE)
+
+if (!loaded) {
+  # Try loading from source (development mode)
+  script_dir <- get_script_dir()
+  pkg_root <- normalizePath(file.path(script_dir, "..", ".."), mustWork = FALSE)
+
+  cat("Script dir:", script_dir, "\n")
+  cat("Package root:", pkg_root, "\n")
+
+  if (file.exists(file.path(pkg_root, "DESCRIPTION"))) {
+    # Load dependencies
+    suppressPackageStartupMessages({
+      library(httpuv)
+      library(jsonlite)
+      library(evaluate)
+      library(later)
+    })
+
+    # Source all R files in correct order (server.R depends on others)
+    r_dir <- file.path(pkg_root, "R")
+    source_order <- c("session.R", "execute.R", "complete.R", "variables.R", "utils.R", "server.R")
+
+    for (f in source_order) {
+      fpath <- file.path(r_dir, f)
+      if (file.exists(fpath)) {
+        cat("Sourcing:", fpath, "\n")
+        source(fpath)
+      }
+    }
+  } else {
+    stop("Could not load mrmdr package. Please install it first. Expected at: ", pkg_root)
+  }
+}
+
+# Run the server
+main()
