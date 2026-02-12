@@ -151,6 +151,20 @@ export class RSessionService extends UpstreamRSessionService {
   constructor() {
     super();
 
+    // If upstream couldn't find the package dir, try our resolver
+    if (!this.packageDir) {
+      const resolved = resolveRuntime('r');
+      if (resolved?.mode === 'local') {
+        this.packageDir = resolved.packageDir;
+        console.log(`[r-session] Patched packageDir from runtime-resolver: ${this.packageDir}`);
+      } else if (resolved?.mode === 'remote') {
+        // For remote mode, set a sentinel so availability checks pass
+        this.packageDir = '__remote__';
+        this._remoteUrl = resolved.url;
+        console.log(`[r-session] Using remote R runtime: ${resolved.url}`);
+      }
+    }
+
     // Patch start() with our resolver
     const upstreamStart = UpstreamRSessionService.prototype.start;
 
@@ -176,6 +190,19 @@ export class RSessionService extends UpstreamRSessionService {
 export class JuliaSessionService extends UpstreamJuliaSessionService {
   constructor() {
     super();
+
+    // If upstream couldn't find the package dir, try our resolver
+    if (!this.packageDir) {
+      const resolved = resolveRuntime('julia');
+      if (resolved?.mode === 'local') {
+        this.packageDir = resolved.packageDir;
+        console.log(`[julia-session] Patched packageDir from runtime-resolver: ${this.packageDir}`);
+      } else if (resolved?.mode === 'remote') {
+        this.packageDir = '__remote__';
+        this._remoteUrl = resolved.url;
+        console.log(`[julia-session] Using remote Julia runtime: ${resolved.url}`);
+      }
+    }
 
     const upstreamStart = UpstreamJuliaSessionService.prototype.start;
 
