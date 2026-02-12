@@ -342,6 +342,34 @@ export async function createServer(config) {
     app.use(express.static(staticDir));
   }
 
+  // ── Raw project file serving ──────────────────────────────────────────
+  // Serves project files (images, assets, generated plots) over HTTP.
+  // Used by the asset resolver in browser mode instead of file:// URLs.
+  // GET /api/project-file?path=relative/path/to/file.png
+  app.get('/api/project-file', (req, res) => {
+    try {
+      const relPath = req.query.path;
+      if (!relPath) {
+        return res.status(400).json({ error: 'path query parameter required' });
+      }
+
+      // Resolve from project directory, prevent path traversal
+      const resolved = path.resolve(projectDir, relPath);
+      if (!resolved.startsWith(path.resolve(projectDir))) {
+        return res.status(403).json({ error: 'Path traversal not allowed' });
+      }
+
+      if (!existsSync(resolved)) {
+        return res.status(404).json({ error: 'File not found' });
+      }
+
+      res.sendFile(resolved);
+    } catch (err) {
+      console.error('[project-file]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // WebSocket for push events (noServer to avoid duplicate upgrade handlers)
   const wss = new WebSocketServer({ noServer: true });
   setupWebSocket(wss, eventBus, token, noAuth);
@@ -574,6 +602,21 @@ function transformIndexHtml(html, host, port) {
 
   html = html.replace(/src=["']\.\/assets\//g, `src="${pathPrefix}assets/`);
   html = html.replace(/href=["']\.\/assets\//g, `href="${pathPrefix}assets/`);
+
+  // 5. Patch asset resolver: replace file:// URLs with HTTP URLs
+  //    In Electron, assets resolve to file:// which works.
+  //    In browser mode, we serve them via /api/project-file?path=...
+  html = html.replace(
+    /const fileUrl = 'file:\/\/' \+ resolvedPath;/g,
+    `// [mrmd-server] Patched: serve via HTTP instead of file://
+        const projectRoot = state.project?.root || '';
+        const relativePath = resolvedPath.startsWith(projectRoot)
+          ? resolvedPath.slice(projectRoot.length).replace(/^\\//, '')
+          : resolvedPath;
+        const fileUrl = (window.MRMD_SERVER_URL || window.location.origin)
+          + '/api/project-file?path=' + encodeURIComponent(relativePath)
+          + (window.MRMD_TOKEN ? '&token=' + window.MRMD_TOKEN : '');`
+  );
 
   return html;
 }

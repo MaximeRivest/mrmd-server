@@ -17,6 +17,9 @@
   const TOKEN = params.get('token') || '';
   const BASE_URL = window.MRMD_SERVER_URL || window.location.origin;
 
+  // Expose token globally for asset resolver patching
+  window.MRMD_TOKEN = TOKEN;
+
   // ==========================================================================
   // WebSocket Proxy Interceptor
   // ==========================================================================
