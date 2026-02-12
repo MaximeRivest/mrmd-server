@@ -90,9 +90,8 @@ export function createAssetRoutes(ctx) {
         return res.status(400).json({ error: 'assetPath and documentPath required' });
       }
 
-      // Calculate relative path from document to asset
-      const docDir = path.dirname(documentPath);
-      const relativePath = path.relative(docDir, assetPath);
+      // Mirror electron behavior: compute path from document to _assets/<assetPath>
+      const relativePath = assetService.getRelativePath(assetPath, documentPath);
 
       res.json({ relativePath });
     } catch (err) {
