@@ -95,6 +95,30 @@ export function createRuntimeRoutes(ctx) {
   });
 
   /**
+   * POST /api/runtime/update-port
+   * Hot-reload the runtime port and/or host after CRIU migration.
+   * Called by the orchestrator — only works in cloud mode.
+   * Body: { port: number, host?: string }
+   */
+  router.post('/update-port', async (req, res) => {
+    try {
+      const { port, host } = req.body;
+      if (!port || typeof port !== 'number') {
+        return res.status(400).json({ error: 'port (number) required' });
+      }
+      const { sessionService } = ctx;
+      if (typeof sessionService.updateRuntimePort !== 'function') {
+        return res.status(400).json({ error: 'Not in cloud mode' });
+      }
+      const result = sessionService.updateRuntimePort(port, host || null);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      console.error('[runtime:update-port]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
    * POST /api/runtime/start-python
    * Start a Python runtime
    * Mirrors: electronAPI.startPython(venvPath, forceNew)

@@ -32,6 +32,9 @@ import { createSettingsRoutes } from './api/settings.js';
 import { createRRoutes } from './api/r.js';
 import { setupWebSocket } from './websocket.js';
 
+// Cloud mode: use CloudSessionService that connects to a pre-existing runtime container
+import CloudSessionService from './cloud-session-service.js';
+
 // Import services from mrmd-electron (pure Node.js, no Electron deps)
 import {
   ProjectService,
@@ -107,9 +110,16 @@ export async function createServer(config) {
   const server = createHttpServer(app);
   const eventBus = new EventBus();
 
+  // Cloud mode: connect to pre-existing runtime container instead of spawning locally
+  const cloudMode = process.env.CLOUD_MODE === '1';
+  const runtimePort = parseInt(process.env.RUNTIME_PORT || '0', 10);
+
   // Instantiate services from mrmd-electron
   const projectService = new ProjectService();
-  const sessionService = new SessionService();
+  const runtimeHost = process.env.RUNTIME_HOST || '127.0.0.1';
+  const sessionService = cloudMode && runtimePort
+    ? new CloudSessionService(runtimePort, runtimeHost)
+    : new SessionService();
   const bashSessionService = new BashSessionService();
   const rSessionService = new RSessionService();
   const juliaSessionService = new JuliaSessionService();
@@ -202,12 +212,17 @@ export async function createServer(config) {
   app.use('/api/r', createRRoutes(context));
 
   // Proxy for localhost services (bash, pty, ai, etc.)
-  // Routes /proxy/:port/* to http://127.0.0.1:port/*
+  // Routes /proxy/:port/* to the correct host
+  // Runtime port routes to runtimeHost (may be remote after CRIU migration)
+  // All other ports route to 127.0.0.1 (local services like bash, pty, ai)
   // IMPORTANT: Forwards X-Api-Key-* headers for AI providers
   app.use('/proxy/:port', async (req, res) => {
     const { port } = req.params;
     const targetPath = req.url; // Includes query string
-    const targetUrl = `http://127.0.0.1:${port}${targetPath}`;
+    // Route runtime traffic to the (possibly remote) runtime host
+    const host = (sessionService.runtimeHost && parseInt(port) === sessionService.runtimePort)
+      ? sessionService.runtimeHost : '127.0.0.1';
+    const targetUrl = `http://${host}:${port}${targetPath}`;
 
     // Build headers - forward all relevant headers including API keys
     const forwardHeaders = {
@@ -516,15 +531,24 @@ function findElectronDir(fromDir) {
  * - Fix relative paths for HTTP serving
  */
 function transformIndexHtml(html, host, port) {
-  // 1. Inject http-shim.js right after <head>
+  // 0. If BASE_PATH is set (cloud mode behind reverse proxy), inject <base> tag
+  //    and use relative paths (no leading /) so <base> resolves them correctly
+  const basePath = process.env.BASE_PATH || '';
+  const baseTag = basePath ? `<base href="${basePath}">` : '';
+  const pathPrefix = basePath ? '' : '/'; // relative in cloud, absolute otherwise
+
+  // 1. Inject base tag + server URL config + http-shim.js right after <head>
+  const serverUrl = basePath
+    ? `${baseTag}\n  <script>window.MRMD_SERVER_URL = window.location.origin + "${basePath}";</script>`
+    : '';
   const shimScript = `
+  ${serverUrl}
   <!-- HTTP shim for browser mode (injected by mrmd-server) -->
-  <script src="/http-shim.js"></script>
+  <script src="${pathPrefix}http-shim.js"></script>
 `;
   html = html.replace('<head>', '<head>' + shimScript);
 
   // 2. Update CSP to allow connections to this server and any host
-  // Replace the strict CSP with a more permissive one for HTTP mode
   const browserCSP = `default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: ws: wss: http: https:; connect-src 'self' ws: wss: http: https: data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://esm.sh https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com blob: http:; font-src 'self' https://fonts.gstatic.com https://www.openresponses.org data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https:; img-src 'self' data: blob: https: http:; frame-src 'self' blob: data:`;
 
   html = html.replace(
@@ -537,17 +561,15 @@ function transformIndexHtml(html, host, port) {
   html = html.replace(/-webkit-app-region:\s*no-drag;/g, '/* -webkit-app-region: no-drag; */');
 
   // 4. Fix relative paths for HTTP serving
-  // ../mrmd-editor/dist/ -> /mrmd-editor/dist/
-  html = html.replace(/src=["']\.\.\/mrmd-editor\//g, 'src="/mrmd-editor/');
-  html = html.replace(/href=["']\.\.\/mrmd-editor\//g, 'href="/mrmd-editor/');
+  // Use pathPrefix: "/" for direct access, "" for behind-proxy (relative + <base>)
+  html = html.replace(/src=["']\.\.\/mrmd-editor\//g, `src="${pathPrefix}mrmd-editor/`);
+  html = html.replace(/href=["']\.\.\/mrmd-editor\//g, `href="${pathPrefix}mrmd-editor/`);
 
-  // ./node_modules/ -> /node_modules/
-  html = html.replace(/src=["']\.\/node_modules\//g, 'src="/node_modules/');
-  html = html.replace(/href=["']\.\/node_modules\//g, 'href="/node_modules/');
+  html = html.replace(/src=["']\.\/node_modules\//g, `src="${pathPrefix}node_modules/`);
+  html = html.replace(/href=["']\.\/node_modules\//g, `href="${pathPrefix}node_modules/`);
 
-  // ./assets/ -> /assets/
-  html = html.replace(/src=["']\.\/assets\//g, 'src="/assets/');
-  html = html.replace(/href=["']\.\/assets\//g, 'href="/assets/');
+  html = html.replace(/src=["']\.\/assets\//g, `src="${pathPrefix}assets/`);
+  html = html.replace(/href=["']\.\/assets\//g, `href="${pathPrefix}assets/`);
 
   return html;
 }

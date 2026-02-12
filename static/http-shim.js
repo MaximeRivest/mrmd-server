@@ -30,7 +30,7 @@
     if (match) {
       const [, port, docPath] = match;
       // Route through server proxy
-      const proxyUrl = new URL(`/sync/${port}/${docPath}`, BASE_URL);
+      const proxyUrl = new URL(`sync/${port}/${docPath}`, BASE_URL);
       proxyUrl.protocol = proxyUrl.protocol === 'https:' ? 'wss:' : 'ws:';
       targetUrl = proxyUrl.toString();
       console.log(`[http-shim] Proxying sync WebSocket: ${url} -> ${targetUrl}`);
@@ -57,7 +57,7 @@
     if (match) {
       const [, port, path] = match;
       // Route through server proxy
-      const proxyUrl = new URL(`/proxy/${port}/${path}`, BASE_URL);
+      const proxyUrl = new URL(`proxy/${port}/${path}`, BASE_URL);
       console.log(`[http-shim] Proxying fetch: ${url} -> ${proxyUrl.toString()}`);
 
       if (typeof input === 'string') {
@@ -75,7 +75,9 @@
   // ==========================================================================
 
   async function apiCall(method, path, body = null) {
-    const url = new URL(path, BASE_URL);
+    // Strip leading slash so URL resolves relative to BASE_URL path (not origin root)
+    const relativePath = path.startsWith('/') ? path.slice(1) : path;
+    const url = new URL(relativePath, BASE_URL);
     if (TOKEN) {
       url.searchParams.set('token', TOKEN);
     }
@@ -121,7 +123,7 @@
   let wsReconnectTimer = null;
 
   function connectWebSocket() {
-    const wsUrl = new URL('/events', BASE_URL);
+    const wsUrl = new URL('events', BASE_URL);
     wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
     if (TOKEN) {
       wsUrl.searchParams.set('token', TOKEN);
