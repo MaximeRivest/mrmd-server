@@ -47,7 +47,7 @@
     "chokidar": "^3.6.0",
     "fzf": "^0.5.2",
     "mrmd-project": "^0.1.2",
-    "mrmd-electron": "^0.3.4",
+    "mrmd-electron": "^0.4.0",
     "mrmd-sync": "^0.3.3"
   }
 }
