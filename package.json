@@ -1,6 +1,6 @@
 {
   "name": "mrmd-server",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "description": "HTTP server for mrmd - run mrmd in any browser, access from anywhere",
   "type": "module",
   "main": "src/index.js",
