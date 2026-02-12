@@ -353,9 +353,14 @@ export async function createServer(config) {
         return res.status(400).json({ error: 'path query parameter required' });
       }
 
-      // Resolve from project directory, prevent path traversal
-      const resolved = path.resolve(projectDir, relPath);
-      if (!resolved.startsWith(path.resolve(projectDir))) {
+      // Allow explicit projectRoot (needed in dynamic multi-project mode)
+      // Fallback to server projectDir, then process.cwd()
+      const baseDir = path.resolve(req.query.projectRoot || projectDir || process.cwd());
+
+      // Resolve from base directory, prevent path traversal
+      const resolved = path.resolve(baseDir, relPath);
+      const basePrefix = baseDir.endsWith(path.sep) ? baseDir : (baseDir + path.sep);
+      if (resolved !== baseDir && !resolved.startsWith(basePrefix)) {
         return res.status(403).json({ error: 'Path traversal not allowed' });
       }
 
@@ -615,6 +620,7 @@ function transformIndexHtml(html, host, port) {
           : resolvedPath;
         const fileUrl = (window.MRMD_SERVER_URL || window.location.origin)
           + '/api/project-file?path=' + encodeURIComponent(relativePath)
+          + (projectRoot ? '&projectRoot=' + encodeURIComponent(projectRoot) : '')
           + (window.MRMD_TOKEN ? '&token=' + window.MRMD_TOKEN : '');`
   );
 
