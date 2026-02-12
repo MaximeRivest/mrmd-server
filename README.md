@@ -254,6 +254,51 @@ ws.onmessage = (e) => {
 
 ---
 
+## Runtime Resolution
+
+MRMD Server supports **R, Julia, and Ruby** runtimes (in addition to Python and Bash which use `uv`). Each native runtime is resolved through a 4-level priority chain:
+
+| Priority | Source | How to configure | Use case |
+|----------|--------|-----------------|----------|
+| 1 | **Remote URL** | `MRMD_R_URL=http://host:port` | Runtime runs on another machine (cloud/feuille.dev) |
+| 2 | **Explicit directory** | `MRMD_R_DIR=/path/to/mrmd-r` | Point to a local checkout |
+| 3 | **Sibling monorepo** | (automatic) | Development mode in mrmd-packages/ |
+| 4 | **Vendor bundle** | (automatic) | Shipped with mrmd-server for npx users |
+
+### Environment Variables
+
+Replace `R` with the language: `R`, `JULIA`, or `RUBY`.
+
+| Variable | Description |
+|----------|-------------|
+| `MRMD_R_URL` | URL of a running mrmd-r server. No local process is spawned. |
+| `MRMD_R_DIR` | Path to the mrmd-r package directory (must contain `DESCRIPTION`). |
+| `MRMD_JULIA_URL` | URL of a running mrmd-julia server. |
+| `MRMD_JULIA_DIR` | Path to the mrmd-julia package directory (must contain `Project.toml`). |
+| `MRMD_RUBY_URL` | URL of a running mrmd-ruby server. |
+| `MRMD_RUBY_DIR` | Path to the mrmd-ruby package directory (must contain `Gemfile`). |
+
+### Remote Runtimes (Cloud Mode)
+
+When a `MRMD_{LANG}_URL` is set, the server does **not** spawn a local process. Instead it registers a virtual session pointing to the remote URL. This is how [feuille.dev](https://feuille.dev) runs runtimes on separate containers:
+
+```bash
+# Runtime container runs mrmd-r on port 9001
+MRMD_R_URL=http://10.0.0.5:9001 mrmd-server ./notebooks
+```
+
+### Local / npx Users
+
+When installed via `npx mrmd-server`, the bundled `vendor/mrmd-r/` is used automatically — no extra setup needed (as long as R is installed on the system).
+
+### Adding a New Language Runtime
+
+1. Add an entry to `LANGUAGES` in `src/runtime-resolver.js`
+2. Bundle the runtime in `vendor/mrmd-{lang}/`
+3. Create an enhanced session service class in `src/enhanced-session-services.js`
+
+---
+
 ## Security
 
 1. **Always use HTTPS** in production — use nginx, caddy, or a cloud load balancer
