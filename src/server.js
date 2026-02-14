@@ -30,6 +30,7 @@ import { createPtyRoutes } from './api/pty.js';
 import { createNotebookRoutes } from './api/notebook.js';
 import { createSettingsRoutes } from './api/settings.js';
 import { createRRoutes } from './api/r.js';
+import { createUserRoutes } from './api/user.js';
 import { setupWebSocket } from './websocket.js';
 
 // Cloud mode: use CloudSessionService that connects to a pre-existing runtime container
@@ -214,6 +215,7 @@ export async function createServer(config) {
   app.use('/api/notebook', createNotebookRoutes(context));
   app.use('/api/settings', createSettingsRoutes(context));
   app.use('/api/r', createRRoutes(context));
+  app.use('/api/user', createUserRoutes());
 
   // Proxy for localhost services (bash, pty, ai, etc.)
   // Routes /proxy/:port/* to the correct host
@@ -623,6 +625,239 @@ function transformIndexHtml(html, host, port) {
           + (projectRoot ? '&projectRoot=' + encodeURIComponent(projectRoot) : '')
           + (window.MRMD_TOKEN ? '&token=' + window.MRMD_TOKEN : '');`
   );
+
+  // 6. Inject user account UI in cloud mode
+  if (process.env.CLOUD_MODE === '1') {
+    const accountUI = `
+<!-- [mrmd-server] Cloud account UI -->
+<style>
+  .cloud-account {
+    position: absolute;
+    right: 48px;
+    top: 50%;
+    transform: translateY(-50%);
+    -webkit-app-region: no-drag;
+    z-index: 100;
+  }
+  .cloud-account-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    background: var(--bg-tertiary, #21262d);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: border-color 0.15s;
+  }
+  .cloud-account-btn:hover {
+    border-color: var(--accent, #58a6ff);
+  }
+  .cloud-account-btn img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+  }
+  .cloud-account-btn .avatar-fallback {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text, #c9d1d9);
+    line-height: 1;
+  }
+  .cloud-account-dropdown {
+    display: none;
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    background: var(--bg-secondary, #161b22);
+    border: 1px solid var(--border, #30363d);
+    border-radius: 8px;
+    padding: 0;
+    min-width: 240px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    z-index: 1000;
+    overflow: hidden;
+  }
+  .cloud-account-dropdown.open {
+    display: block;
+  }
+  .cloud-account-header {
+    padding: 16px;
+    border-bottom: 1px solid var(--border, #30363d);
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  .cloud-account-header img {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .cloud-account-header .avatar-fallback-lg {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--bg-tertiary, #21262d);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text, #c9d1d9);
+    flex-shrink: 0;
+  }
+  .cloud-account-info {
+    overflow: hidden;
+  }
+  .cloud-account-name {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text, #c9d1d9);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .cloud-account-email {
+    font-size: 12px;
+    color: var(--text-muted, #8b949e);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .cloud-account-plan {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 11px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: var(--bg-tertiary, #21262d);
+    color: var(--text-muted, #8b949e);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .cloud-account-menu {
+    padding: 4px 0;
+  }
+  .cloud-account-menu a,
+  .cloud-account-menu button {
+    display: block;
+    width: 100%;
+    padding: 8px 16px;
+    border: none;
+    background: none;
+    color: var(--text, #c9d1d9);
+    font-size: 13px;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .cloud-account-menu a:hover,
+  .cloud-account-menu button:hover {
+    background: var(--hover-bg, rgba(255,255,255,0.04));
+  }
+  .cloud-account-menu .separator {
+    height: 1px;
+    background: var(--border, #30363d);
+    margin: 4px 0;
+  }
+  .cloud-account-menu .logout-btn {
+    color: var(--error, #f85149);
+  }
+</style>
+<script>
+(function() {
+  // Fetch user info and build account UI once the DOM is ready
+  function initAccountUI() {
+    const baseUrl = window.MRMD_SERVER_URL || '';
+
+    fetch(baseUrl + 'api/user/me')
+      .then(r => r.ok ? r.json() : null)
+      .then(user => {
+        if (!user || !user.id) return;
+
+        const titlebar = document.querySelector('.titlebar');
+        if (!titlebar) return;
+
+        // Build the account widget
+        const container = document.createElement('div');
+        container.className = 'cloud-account';
+
+        const initial = (user.name || user.email || '?')[0].toUpperCase();
+        const avatarHtml = user.avatar_url
+          ? '<img src="' + user.avatar_url + '" alt="avatar">'
+          : '<span class="avatar-fallback">' + initial + '</span>';
+
+        const avatarLgHtml = user.avatar_url
+          ? '<img src="' + user.avatar_url + '" alt="avatar">'
+          : '<div class="avatar-fallback-lg">' + initial + '</div>';
+
+        container.innerHTML =
+          '<button class="cloud-account-btn" title="Account">' + avatarHtml + '</button>' +
+          '<div class="cloud-account-dropdown">' +
+            '<div class="cloud-account-header">' +
+              avatarLgHtml +
+              '<div class="cloud-account-info">' +
+                '<div class="cloud-account-name">' + (user.name || 'User') + '</div>' +
+                '<div class="cloud-account-email">' + (user.email || '') + '</div>' +
+                '<span class="cloud-account-plan">' + (user.plan || 'free') + '</span>' +
+              '</div>' +
+            '</div>' +
+            '<div class="cloud-account-menu">' +
+              '<a href="/dashboard">Dashboard</a>' +
+              '<div class="separator"></div>' +
+              '<button class="logout-btn" id="cloud-logout-btn">Sign out</button>' +
+            '</div>' +
+          '</div>';
+
+        titlebar.appendChild(container);
+
+        // Toggle dropdown
+        const btn = container.querySelector('.cloud-account-btn');
+        const dropdown = container.querySelector('.cloud-account-dropdown');
+
+        btn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          dropdown.classList.toggle('open');
+        });
+
+        document.addEventListener('click', function() {
+          dropdown.classList.remove('open');
+        });
+
+        dropdown.addEventListener('click', function(e) {
+          e.stopPropagation();
+        });
+
+        // Logout
+        document.getElementById('cloud-logout-btn').addEventListener('click', async function() {
+          try {
+            await fetch('/auth/logout', { method: 'POST', credentials: 'include' });
+          } catch(e) { /* best effort */ }
+          window.location.href = '/login';
+        });
+      })
+      .catch(function(err) {
+        console.warn('[cloud-account] Failed to load user info:', err);
+      });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initAccountUI);
+  } else {
+    // Small delay to let the app render first
+    setTimeout(initAccountUI, 500);
+  }
+})();
+</script>
+`;
+    html = html.replace('</head>', accountUI + '</head>');
+  }
 
   return html;
 }

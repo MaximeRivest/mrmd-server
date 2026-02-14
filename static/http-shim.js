@@ -124,6 +124,7 @@
 
   let ws = null;
   let wsReconnectTimer = null;
+  let fileScanToken = 0;
 
   function connectWebSocket() {
     const wsUrl = new URL('events', BASE_URL);
@@ -221,23 +222,70 @@
     // ========================================================================
 
     scanFiles: (searchDir) => {
-      // Trigger scan and emit results via onFilesUpdate (matches electron behavior)
-      GET(`/api/file/scan?root=${encodeURIComponent(searchDir || '')}`)
-        .then(files => {
-          // Emit files-update event with the results
-          const handlers = eventHandlers['files-update'];
-          if (handlers) {
-            handlers.forEach(cb => {
-              try {
-                cb({ files });
-              } catch (err) {
-                console.error('[http-shim] files-update handler error:', err);
-              }
-            });
+      // Match Electron's streaming contract closely:
+      // - emit reset with scanToken
+      // - ignore stale responses from older scans
+      // - emit done=true so UI doesn't stay stuck on "Indexing..."
+      const scanToken = ++fileScanToken;
+      const handlers = eventHandlers['files-update'];
+
+      const emitFilesUpdate = (payload) => {
+        if (!handlers) return;
+        handlers.forEach(cb => {
+          try {
+            cb(payload);
+          } catch (err) {
+            console.error('[http-shim] files-update handler error:', err);
           }
+        });
+      };
+
+      emitFilesUpdate({
+        scanToken,
+        reset: true,
+        done: false,
+        totalFiles: 0,
+        totalDirs: 0,
+      });
+
+      GET(`/api/file/scan?root=${encodeURIComponent(searchDir || '')}`)
+        .then((result) => {
+          if (scanToken !== fileScanToken) return; // stale response
+
+          const files = Array.isArray(result)
+            ? result
+            : Array.isArray(result?.files)
+              ? result.files
+              : [];
+
+          // Derive directory list from file paths for folder navigation
+          const dirs = new Set();
+          for (const filePath of files) {
+            if (typeof filePath !== 'string') continue;
+            const parts = filePath.split('/').filter(Boolean);
+            const isAbsolute = filePath.startsWith('/');
+            let current = isAbsolute ? '/' : '';
+            for (let i = 0; i < parts.length - 1; i++) {
+              const part = parts[i];
+              if (current === '/') current = '/' + part;
+              else current = current ? current + '/' + part : part;
+              dirs.add(current);
+            }
+          }
+
+          emitFilesUpdate({
+            scanToken,
+            filesChunk: files,
+            dirsChunk: Array.from(dirs),
+            totalFiles: files.length,
+            totalDirs: dirs.size,
+            done: true,
+          });
         })
         .catch(err => {
+          if (scanToken !== fileScanToken) return;
           console.error('[http-shim] scanFiles error:', err);
+          emitFilesUpdate({ scanToken, error: err.message || String(err), done: true });
         });
     },
 
