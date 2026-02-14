@@ -29,6 +29,13 @@
 
 ---
 
+## Documentation
+
+- Start here: [docs/README.md](./docs/README.md)
+- Quick explain: [docs/00-quick-explain.md](./docs/00-quick-explain.md)
+- Architecture: [docs/10-architecture-overview.md](./docs/10-architecture-overview.md)
+- Deployment: [docs/20-deployment.md](./docs/20-deployment.md)
+
 ## What is MRMD Server?
 
 MRMD Server is the headless/server version of [MRMD Electron](https://github.com/MaximeRivest/mrmd-electron). It provides the same markdown notebook experience without requiring a desktop app — just start the server and open it in any browser.
