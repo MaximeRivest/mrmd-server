@@ -258,8 +258,11 @@
               ? result.files
               : [];
 
+          const explicitDirs = Array.isArray(result?.dirs) ? result.dirs : null;
+
           // Derive directory list from file paths for folder navigation
-          const dirs = new Set();
+          // (fallback when API only returns files)
+          const derivedDirs = new Set();
           for (const filePath of files) {
             if (typeof filePath !== 'string') continue;
             const parts = filePath.split('/').filter(Boolean);
@@ -269,16 +272,18 @@
               const part = parts[i];
               if (current === '/') current = '/' + part;
               else current = current ? current + '/' + part : part;
-              dirs.add(current);
+              derivedDirs.add(current);
             }
           }
+
+          const dirs = explicitDirs || Array.from(derivedDirs);
 
           emitFilesUpdate({
             scanToken,
             filesChunk: files,
-            dirsChunk: Array.from(dirs),
+            dirsChunk: dirs,
             totalFiles: files.length,
-            totalDirs: dirs.size,
+            totalDirs: dirs.length,
             done: true,
           });
         })

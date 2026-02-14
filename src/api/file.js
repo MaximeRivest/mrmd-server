@@ -6,6 +6,46 @@
 
 import { Router } from 'express';
 import path from 'path';
+import fsPromises from 'fs/promises';
+
+/**
+ * Scan directories for picker navigation (includes empty folders).
+ * Returns absolute paths.
+ */
+async function scanDirectories(root, { maxDepth = 10, includeHidden = false } = {}) {
+  const dirs = [];
+
+  const walk = async (dir, depth) => {
+    if (depth > maxDepth) return;
+
+    let entries;
+    try {
+      entries = await fsPromises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      // Skip system files (.)
+      if (entry.name.startsWith('.')) continue;
+
+      // Skip hidden files (_) unless requested
+      if (!includeHidden && entry.name.startsWith('_')) continue;
+
+      // Skip node_modules
+      if (entry.name === 'node_modules') continue;
+
+      const fullPath = path.join(dir, entry.name);
+      dirs.push(fullPath);
+      await walk(fullPath, depth + 1);
+    }
+  };
+
+  await walk(root, 0);
+  return dirs;
+}
 
 /**
  * Create file routes
@@ -37,8 +77,11 @@ export function createFileRoutes(ctx) {
       const relativeFiles = await fileService.scan(root, options);
       // Convert relative paths to absolute (file picker expects absolute paths)
       const files = relativeFiles.map(f => path.join(root, f));
-      console.log(`[file:scan] Found ${files.length} files`);
-      res.json(files);
+      const dirs = await scanDirectories(root, options);
+      console.log(`[file:scan] Found ${files.length} files, ${dirs.length} dirs`);
+
+      // Return object for modern clients, still easy to consume by legacy ones.
+      res.json({ files, dirs });
     } catch (err) {
       console.error('[file:scan]', err);
       res.status(500).json({ error: err.message });
