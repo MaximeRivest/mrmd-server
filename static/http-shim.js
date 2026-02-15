@@ -617,7 +617,14 @@
 
       save: async (projectRoot, file, filename) => {
         // Convert Uint8Array to base64 for JSON transport
-        const base64 = btoa(String.fromCharCode.apply(null, file));
+        // Use chunked approach to avoid call stack size limits on large files
+        let binary = '';
+        const bytes = new Uint8Array(file);
+        const chunkSize = 8192;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+        }
+        const base64 = btoa(binary);
         return POST('/api/asset/save', {
           projectRoot,
           file: base64,
