@@ -3,7 +3,7 @@
  *
  * Supports three modes per language (checked in priority order):
  *
- * 1. REMOTE: env MRMD_{LANG}_URL → runtime already running elsewhere (feuille.dev)
+ * 1. REMOTE: env MRMD_{LANG}_URL → runtime already running elsewhere (markco.dev)
  *    - No process spawned; just return the URL
  *    - Example: MRMD_R_URL=http://10.0.0.5:9001
  *

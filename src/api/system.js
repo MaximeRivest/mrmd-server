@@ -12,6 +12,170 @@ import { existsSync } from 'fs';
 import { spawn, execSync } from 'child_process';
 import { ensureAiServer, getAiServer, restartAiServer } from '../ai-service.js';
 
+const MAX_RECENT_FILES = 50;
+const MAX_RECENT_VENVS = 20;
+
+function toIsoOrNull(value) {
+  if (typeof value !== 'string') return null;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms).toISOString();
+}
+
+function normalizeRecentEntry(entry, {
+  timeField,
+  fallbackTimeFields = [],
+  defaultTime = new Date().toISOString(),
+} = {}) {
+  if (!entry) return null;
+
+  let pathValue = null;
+  let countValue = 1;
+  let timeValue = null;
+
+  if (typeof entry === 'string') {
+    pathValue = entry;
+  } else if (typeof entry === 'object') {
+    if (typeof entry.path === 'string') {
+      pathValue = entry.path;
+    }
+
+    const rawCount = Number(entry.count ?? entry.frequency ?? entry.opens ?? 1);
+    if (Number.isFinite(rawCount) && rawCount > 0) {
+      countValue = rawCount;
+    }
+
+    const candidates = [entry[timeField], ...fallbackTimeFields.map(k => entry[k])];
+    for (const candidate of candidates) {
+      const normalized = toIsoOrNull(candidate);
+      if (normalized) {
+        timeValue = normalized;
+        break;
+      }
+    }
+  }
+
+  if (!pathValue) return null;
+
+  return {
+    path: pathValue,
+    [timeField]: timeValue || defaultTime,
+    count: countValue,
+  };
+}
+
+function sortRecentEntries(entries, timeField) {
+  entries.sort((a, b) => {
+    const aTime = Date.parse(a?.[timeField] || 0) || 0;
+    const bTime = Date.parse(b?.[timeField] || 0) || 0;
+    if (aTime !== bTime) return bTime - aTime;
+
+    const aCount = Number(a?.count || 0);
+    const bCount = Number(b?.count || 0);
+    if (aCount !== bCount) return bCount - aCount;
+
+    return String(a?.path || '').localeCompare(String(b?.path || ''));
+  });
+  return entries;
+}
+
+function normalizeRecentList(list, {
+  timeField,
+  fallbackTimeFields = [],
+  limit,
+} = {}) {
+  const nowMs = Date.now();
+  const byPath = new Map();
+
+  if (Array.isArray(list)) {
+    for (let i = 0; i < list.length; i++) {
+      const raw = list[i];
+      const syntheticTime = new Date(nowMs - i).toISOString();
+      const normalized = normalizeRecentEntry(raw, {
+        timeField,
+        fallbackTimeFields,
+        defaultTime: syntheticTime,
+      });
+      if (!normalized) continue;
+
+      const existing = byPath.get(normalized.path);
+      if (!existing) {
+        byPath.set(normalized.path, normalized);
+      } else {
+        const existingTime = Date.parse(existing[timeField] || 0) || 0;
+        const nextTime = Date.parse(normalized[timeField] || 0) || 0;
+        byPath.set(normalized.path, {
+          path: normalized.path,
+          [timeField]: nextTime >= existingTime ? normalized[timeField] : existing[timeField],
+          count: Math.max(Number(existing.count || 1), Number(normalized.count || 1)),
+        });
+      }
+    }
+  }
+
+  const rows = sortRecentEntries(Array.from(byPath.values()), timeField);
+  return rows.slice(0, limit);
+}
+
+function mergeRecentEntries(existingList, incomingList, {
+  timeField,
+  fallbackTimeFields = [],
+  limit,
+  incrementCount = false,
+} = {}) {
+  const merged = new Map();
+
+  for (const row of normalizeRecentList(existingList, { timeField, fallbackTimeFields, limit: Number.MAX_SAFE_INTEGER })) {
+    merged.set(row.path, row);
+  }
+
+  const nowIso = new Date().toISOString();
+  const incoming = Array.isArray(incomingList) ? incomingList : [];
+  for (const raw of incoming) {
+    const normalized = normalizeRecentEntry(raw, {
+      timeField,
+      fallbackTimeFields,
+      defaultTime: nowIso,
+    });
+    if (!normalized) continue;
+
+    const previous = merged.get(normalized.path);
+    if (!previous) {
+      merged.set(normalized.path, normalized);
+      continue;
+    }
+
+    const incomingCount = Number(normalized.count || 1);
+    const previousCount = Number(previous.count || 1);
+
+    merged.set(normalized.path, {
+      path: normalized.path,
+      [timeField]: normalized[timeField] || previous[timeField] || nowIso,
+      count: incrementCount
+        ? Math.max(1, previousCount + Math.max(1, incomingCount))
+        : Math.max(previousCount, incomingCount),
+    });
+  }
+
+  const rows = sortRecentEntries(Array.from(merged.values()), timeField);
+  return rows.slice(0, limit);
+}
+
+function normalizeRecentPayload(payload) {
+  return {
+    files: normalizeRecentList(payload?.files, {
+      timeField: 'opened',
+      fallbackTimeFields: ['used'],
+      limit: MAX_RECENT_FILES,
+    }),
+    venvs: normalizeRecentList(payload?.venvs, {
+      timeField: 'used',
+      fallbackTimeFields: ['opened'],
+      limit: MAX_RECENT_VENVS,
+    }),
+  };
+}
+
 /**
  * Create system routes
  * @param {import('../server.js').ServerContext} ctx
@@ -134,13 +298,13 @@ export function createSystemRoutes(ctx) {
    */
   router.get('/recent', async (req, res) => {
     try {
-      // Try to read from config file
       const configDir = path.join(os.homedir(), '.config', 'mrmd');
       const recentPath = path.join(configDir, 'recent.json');
 
       try {
         const content = await fs.readFile(recentPath, 'utf-8');
-        res.json(JSON.parse(content));
+        const parsed = JSON.parse(content);
+        res.json(normalizeRecentPayload(parsed));
       } catch {
         res.json({ files: [], venvs: [] });
       }
@@ -156,26 +320,58 @@ export function createSystemRoutes(ctx) {
    */
   router.post('/recent', async (req, res) => {
     try {
-      const { files, venvs } = req.body;
+      const {
+        files,
+        venvs,
+        file,
+        venv,
+      } = req.body || {};
 
       const configDir = path.join(os.homedir(), '.config', 'mrmd');
       await fs.mkdir(configDir, { recursive: true });
 
       const recentPath = path.join(configDir, 'recent.json');
 
-      // Read existing
       let existing = { files: [], venvs: [] };
       try {
         const content = await fs.readFile(recentPath, 'utf-8');
-        existing = JSON.parse(content);
+        existing = normalizeRecentPayload(JSON.parse(content));
       } catch {}
 
-      // Merge
-      if (files) {
-        existing.files = [...new Set([...files, ...existing.files])].slice(0, 50);
+      if (Array.isArray(files)) {
+        existing.files = mergeRecentEntries(existing.files, files, {
+          timeField: 'opened',
+          fallbackTimeFields: ['used'],
+          limit: MAX_RECENT_FILES,
+          incrementCount: false,
+        });
       }
-      if (venvs) {
-        existing.venvs = [...new Set([...venvs, ...existing.venvs])].slice(0, 20);
+
+      if (file) {
+        existing.files = mergeRecentEntries(existing.files, [file], {
+          timeField: 'opened',
+          fallbackTimeFields: ['used'],
+          limit: MAX_RECENT_FILES,
+          incrementCount: true,
+        });
+      }
+
+      if (Array.isArray(venvs)) {
+        existing.venvs = mergeRecentEntries(existing.venvs, venvs, {
+          timeField: 'used',
+          fallbackTimeFields: ['opened'],
+          limit: MAX_RECENT_VENVS,
+          incrementCount: false,
+        });
+      }
+
+      if (venv) {
+        existing.venvs = mergeRecentEntries(existing.venvs, [venv], {
+          timeField: 'used',
+          fallbackTimeFields: ['opened'],
+          limit: MAX_RECENT_VENVS,
+          incrementCount: true,
+        });
       }
 
       await fs.writeFile(recentPath, JSON.stringify(existing, null, 2));

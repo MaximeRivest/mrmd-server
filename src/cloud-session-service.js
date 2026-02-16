@@ -13,8 +13,9 @@ class CloudSessionService {
   constructor(runtimePort, runtimeHost) {
     this.runtimePort = runtimePort;
     this.runtimeHost = runtimeHost || '127.0.0.1';
+    this.homeDir = process.env.CLOUD_HOME || process.env.HOME || '/home/ubuntu';
     this.sessions = new Map();
-    this.defaultSession = null;
+    this.defaultRuntime = null;
   }
 
   /**
@@ -47,14 +48,14 @@ class CloudSessionService {
       port,
       pid: null,
       venv: null,
-      cwd: config.cwd || '/home/user',
+      cwd: config.cwd || this.homeDir,
       startedAt: new Date().toISOString(),
       alive: true,
       cloud: true,
     };
 
     this.sessions.set(name, info);
-    if (!this.defaultSession) this.defaultSession = name;
+    if (!this.defaultRuntime) this.defaultRuntime = name;
 
     return info;
   }
@@ -103,7 +104,7 @@ class CloudSessionService {
 
     // Auto-register the runtime container as a session
     try {
-      const info = await this.start({ name, cwd: projectRoot || '/home/user' });
+      const info = await this.start({ name, cwd: projectRoot || this.homeDir });
       return {
         name,
         port: info.port,
@@ -121,7 +122,7 @@ class CloudSessionService {
         alive: false,
         autoStart: true,
         venv: null,
-        cwd: projectRoot || '/home/user',
+        cwd: projectRoot || this.homeDir,
         pid: null,
         error: err.message,
       };
@@ -142,6 +143,31 @@ class CloudSessionService {
     }
     console.log(`[cloud-session] Runtime updated: ${oldHost}:${oldPort} → ${this.runtimeHost}:${newPort}`);
     return { oldPort, newPort, oldHost, newHost: this.runtimeHost, sessionsUpdated: this.sessions.size };
+  }
+
+  /**
+   * Get or create runtime for a specific language.
+   * In cloud mode, all languages route to the same runtime container.
+   */
+  async getForDocumentLanguage(language, documentPath, projectConfig, frontmatter, projectRoot) {
+    // Cloud mode: single runtime handles everything
+    return this.getForDocument(documentPath, projectConfig, frontmatter, projectRoot);
+  }
+
+  /**
+   * Check if a language is available.
+   * In cloud mode, the runtime container handles whatever it supports.
+   */
+  isAvailable(language) {
+    return { available: true };
+  }
+
+  /**
+   * List supported languages.
+   * In cloud mode, Python is the primary; others depend on container image.
+   */
+  supportedLanguages() {
+    return ['python'];
   }
 
   /**

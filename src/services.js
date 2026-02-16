@@ -10,24 +10,8 @@ export {
 } from 'mrmd-electron/src/services/project-service.js';
 
 export {
-  default as SessionService,
-} from 'mrmd-electron/src/services/session-service.js';
-
-export {
-  default as BashSessionService,
-} from 'mrmd-electron/src/services/bash-session-service.js';
-
-export {
-  default as RSessionService,
-} from 'mrmd-electron/src/services/r-session-service.js';
-
-export {
-  default as JuliaSessionService,
-} from 'mrmd-electron/src/services/julia-session-service.js';
-
-export {
-  default as PtySessionService,
-} from 'mrmd-electron/src/services/pty-session-service.js';
+  default as RuntimeService,
+} from 'mrmd-electron/src/services/runtime-service.js';
 
 export {
   default as FileService,

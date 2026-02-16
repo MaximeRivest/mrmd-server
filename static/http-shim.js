@@ -187,6 +187,8 @@
 
     getRecent: () => GET('/api/system/recent'),
 
+    updateRecent: (payload) => POST('/api/system/recent', payload || {}),
+
     getAi: () => GET('/api/system/ai'),
 
     // System info and uv management
@@ -324,53 +326,11 @@
       GET(`/api/file/info?path=${encodeURIComponent(filePath)}`),
 
     // ========================================================================
-    // Python management
+    // Venv creation (still useful for setup flows)
     // ========================================================================
 
     createVenv: (venvPath) =>
       POST('/api/system/create-venv', { venvPath }),
-
-    installMrmdPython: (venvPath) =>
-      POST('/api/system/install-mrmd-python', { venvPath }),
-
-    startPython: (venvPath, forceNew = false) =>
-      POST('/api/runtime/start-python', { venvPath, forceNew }),
-
-    // ========================================================================
-    // Runtime management
-    // ========================================================================
-
-    listRuntimes: () => GET('/api/runtime'),
-
-    killRuntime: (runtimeId) => DELETE(`/api/runtime/${encodeURIComponent(runtimeId)}`),
-
-    attachRuntime: (runtimeId) => POST(`/api/runtime/${encodeURIComponent(runtimeId)}/attach`, {}),
-
-    // ========================================================================
-    // Open file (legacy)
-    // ========================================================================
-
-    openFile: async (filePath) => {
-      // Get project info and session info
-      const project = await window.electronAPI.project.get(filePath);
-      const session = await window.electronAPI.session.forDocument(filePath);
-
-      // Extract filename without extension for docName
-      const fileName = filePath.split('/').pop();
-      const lower = fileName.toLowerCase();
-      const docName = lower.endsWith('.md') ? fileName.replace(/\.md$/i, '') : fileName;
-
-      // Use syncPort from project response (dynamically assigned per-project)
-      const syncPort = project?.syncPort || 4444;
-
-      return {
-        success: true,
-        syncPort,
-        docName,
-        projectDir: project?.root || filePath.split('/').slice(0, -1).join('/'),
-        pythonPort: session?.pythonPort || null,
-      };
-    },
 
     // ========================================================================
     // PROJECT SERVICE
@@ -402,69 +362,26 @@
     },
 
     // ========================================================================
-    // SESSION SERVICE
+    // UNIFIED RUNTIME SERVICE
     // ========================================================================
 
-    session: {
-      list: () => GET('/api/session'),
+    runtime: {
+      list: (language) => GET(`/api/runtime${language ? `?language=${encodeURIComponent(language)}` : ''}`),
 
-      start: (config) => POST('/api/session', { config }),
+      start: (config) => POST('/api/runtime', { config }),
 
-      stop: (sessionName) => DELETE(`/api/session/${encodeURIComponent(sessionName)}`),
+      stop: (sessionName) => DELETE(`/api/runtime/${encodeURIComponent(sessionName)}`),
 
-      restart: (sessionName) => POST(`/api/session/${encodeURIComponent(sessionName)}/restart`, {}),
+      restart: (sessionName) => POST(`/api/runtime/${encodeURIComponent(sessionName)}/restart`, {}),
 
-      forDocument: (documentPath) => POST('/api/session/for-document', { documentPath }),
-    },
+      forDocument: (documentPath) => POST('/api/runtime/for-document', { documentPath }),
 
-    // ========================================================================
-    // BASH SESSION SERVICE
-    // ========================================================================
+      forDocumentLanguage: (documentPath, language) =>
+        POST(`/api/runtime/for-document/${encodeURIComponent(language)}`, { documentPath }),
 
-    bash: {
-      list: () => GET('/api/bash'),
+      isAvailable: (language) => GET(`/api/runtime/available/${encodeURIComponent(language)}`),
 
-      start: (config) => POST('/api/bash', { config }),
-
-      stop: (sessionName) => DELETE(`/api/bash/${encodeURIComponent(sessionName)}`),
-
-      restart: (sessionName) => POST(`/api/bash/${encodeURIComponent(sessionName)}/restart`, {}),
-
-      forDocument: (documentPath) => POST('/api/bash/for-document', { documentPath }),
-    },
-
-    // ========================================================================
-    // JULIA SESSION SERVICE
-    // ========================================================================
-
-    julia: {
-      list: () => GET('/api/julia'),
-
-      start: (config) => POST('/api/julia', { config }),
-
-      stop: (sessionName) => DELETE(`/api/julia/${encodeURIComponent(sessionName)}`),
-
-      restart: (sessionName) => POST(`/api/julia/${encodeURIComponent(sessionName)}/restart`, {}),
-
-      forDocument: (documentPath) => POST('/api/julia/for-document', { documentPath }),
-
-      isAvailable: () => GET('/api/julia/available').then(r => r.available),
-    },
-
-    // ========================================================================
-    // PTY SESSION SERVICE (for ```term blocks)
-    // ========================================================================
-
-    pty: {
-      list: () => GET('/api/pty'),
-
-      start: (config) => POST('/api/pty', { config }),
-
-      stop: (sessionName) => DELETE(`/api/pty/${encodeURIComponent(sessionName)}`),
-
-      restart: (sessionName) => POST(`/api/pty/${encodeURIComponent(sessionName)}/restart`, {}),
-
-      forDocument: (documentPath) => POST('/api/pty/for-document', { documentPath }),
+      languages: () => GET('/api/runtime/languages'),
     },
 
     // ========================================================================
@@ -477,24 +394,6 @@
       startSync: (ipynbPath) => POST('/api/notebook/start-sync', { ipynbPath }),
 
       stopSync: (ipynbPath) => POST('/api/notebook/stop-sync', { ipynbPath }),
-    },
-
-    // ========================================================================
-    // R SESSION SERVICE
-    // ========================================================================
-
-    r: {
-      list: () => GET('/api/r'),
-
-      start: (config) => POST('/api/r', { config }),
-
-      stop: (sessionName) => DELETE(`/api/r/${encodeURIComponent(sessionName)}`),
-
-      restart: (sessionName) => POST(`/api/r/${encodeURIComponent(sessionName)}/restart`, {}),
-
-      forDocument: (documentPath) => POST('/api/r/for-document', { documentPath }),
-
-      isAvailable: () => GET('/api/r/available').then(r => r.available),
     },
 
     // ========================================================================

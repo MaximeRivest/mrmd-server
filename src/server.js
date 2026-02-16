@@ -19,17 +19,12 @@ const require = createRequire(import.meta.url);
 import { createAuthMiddleware, generateToken } from './auth.js';
 import { EventBus } from './events.js';
 import { createProjectRoutes } from './api/project.js';
-import { createSessionRoutes } from './api/session.js';
-import { createBashRoutes } from './api/bash.js';
 import { createFileRoutes } from './api/file.js';
 import { createAssetRoutes } from './api/asset.js';
 import { createSystemRoutes } from './api/system.js';
 import { createRuntimeRoutes } from './api/runtime.js';
-import { createJuliaRoutes } from './api/julia.js';
-import { createPtyRoutes } from './api/pty.js';
 import { createNotebookRoutes } from './api/notebook.js';
 import { createSettingsRoutes } from './api/settings.js';
-import { createRRoutes } from './api/r.js';
 import { createUserRoutes } from './api/user.js';
 import { setupWebSocket } from './websocket.js';
 
@@ -39,19 +34,11 @@ import CloudSessionService from './cloud-session-service.js';
 // Import services from mrmd-electron (pure Node.js, no Electron deps)
 import {
   ProjectService,
-  SessionService,
-  BashSessionService,
-  PtySessionService,
+  RuntimeService,
   FileService,
   AssetService,
   SettingsService,
 } from './services.js';
-
-// Enhanced session services: support vendor-bundled, env-override, and remote runtimes
-import {
-  RSessionService,
-  JuliaSessionService,
-} from './enhanced-session-services.js';
 
 // Import sync manager for dynamic project handling
 import {
@@ -119,16 +106,12 @@ export async function createServer(config) {
   const cloudMode = process.env.CLOUD_MODE === '1';
   const runtimePort = parseInt(process.env.RUNTIME_PORT || '0', 10);
 
-  // Instantiate services from mrmd-electron
+  // Instantiate services
   const projectService = new ProjectService();
   const runtimeHost = process.env.RUNTIME_HOST || '127.0.0.1';
-  const sessionService = cloudMode && runtimePort
+  const runtimeService = cloudMode && runtimePort
     ? new CloudSessionService(runtimePort, runtimeHost)
-    : new SessionService();
-  const bashSessionService = new BashSessionService();
-  const rSessionService = new RSessionService();
-  const juliaSessionService = new JuliaSessionService();
-  const ptySessionService = new PtySessionService();
+    : new RuntimeService();
   const fileService = new FileService();
   const assetService = new AssetService();
   const settingsService = new SettingsService();
@@ -146,13 +129,9 @@ export async function createServer(config) {
     aiPort,
     eventBus,
 
-    // Services from mrmd-electron
+    // Services
     projectService,
-    sessionService,
-    bashSessionService,
-    rSessionService,
-    juliaSessionService,
-    ptySessionService,
+    runtimeService,
     fileService,
     assetService,
     settingsService,
@@ -202,19 +181,14 @@ export async function createServer(config) {
     }
   });
 
-  // API routes - mirror electronAPI structure
+  // API routes
   app.use('/api/project', createProjectRoutes(context));
-  app.use('/api/session', createSessionRoutes(context));
-  app.use('/api/bash', createBashRoutes(context));
   app.use('/api/file', createFileRoutes(context));
   app.use('/api/asset', createAssetRoutes(context));
   app.use('/api/system', createSystemRoutes(context));
   app.use('/api/runtime', createRuntimeRoutes(context));
-  app.use('/api/julia', createJuliaRoutes(context));
-  app.use('/api/pty', createPtyRoutes(context));
   app.use('/api/notebook', createNotebookRoutes(context));
   app.use('/api/settings', createSettingsRoutes(context));
-  app.use('/api/r', createRRoutes(context));
   app.use('/api/user', createUserRoutes());
 
   // Proxy for localhost services (bash, pty, ai, etc.)
@@ -226,8 +200,8 @@ export async function createServer(config) {
     const { port } = req.params;
     const targetPath = req.url; // Includes query string
     // Route runtime traffic to the (possibly remote) runtime host
-    const host = (sessionService.runtimeHost && parseInt(port) === sessionService.runtimePort)
-      ? sessionService.runtimeHost : '127.0.0.1';
+    const host = (runtimeService.runtimeHost && parseInt(port) === runtimeService.runtimePort)
+      ? runtimeService.runtimeHost : '127.0.0.1';
     const targetUrl = `http://${host}:${port}${targetPath}`;
 
     // Build headers - forward all relevant headers including API keys
@@ -483,27 +457,13 @@ export async function createServer(config) {
       // Stop AI server
       stopAiServer();
 
-      // Stop all sessions via services (if they have shutdown methods)
+      // Stop all runtime sessions
       try {
-        if (typeof sessionService.shutdown === 'function') {
-          await sessionService.shutdown();
+        if (typeof runtimeService.shutdown === 'function') {
+          runtimeService.shutdown();
         }
       } catch (e) {
-        console.warn('[server] Error stopping sessions:', e.message);
-      }
-      try {
-        if (typeof bashSessionService.shutdown === 'function') {
-          await bashSessionService.shutdown();
-        }
-      } catch (e) {
-        console.warn('[server] Error stopping bash sessions:', e.message);
-      }
-      try {
-        if (typeof ptySessionService.shutdown === 'function') {
-          await ptySessionService.shutdown();
-        }
-      } catch (e) {
-        console.warn('[server] Error stopping pty sessions:', e.message);
+        console.warn('[server] Error stopping runtimes:', e.message);
       }
 
       // Legacy: kill child processes
@@ -631,6 +591,11 @@ function transformIndexHtml(html, host, port) {
     const accountUI = `
 <!-- [mrmd-server] Cloud account UI -->
 <style>
+  /* Shift search+AI buttons left to make room for account avatar */
+  .titlebar-mobile-actions {
+    right: 88px !important;
+  }
+
   .cloud-account {
     position: absolute;
     right: 48px;
@@ -768,6 +733,35 @@ function transformIndexHtml(html, host, port) {
   }
   .cloud-account-menu .logout-btn {
     color: var(--error, #f85149);
+  }
+
+  /* ── Mobile: flow inside titlebar flex, don't overlap action buttons ── */
+  @media (max-width: 768px) {
+    /* Reset the desktop shift — mobile layout is flex-based */
+    .titlebar-mobile-actions {
+      right: auto !important;
+      position: static !important;
+      transform: none !important;
+    }
+    .cloud-account {
+      position: static;
+      transform: none;
+      flex-shrink: 0;
+      order: 10;
+    }
+    .cloud-account-btn {
+      width: 30px;
+      height: 30px;
+    }
+    .cloud-account-dropdown {
+      position: fixed;
+      top: 56px;
+      right: 8px;
+      left: auto;
+      min-width: 240px;
+      width: calc(100vw - 24px);
+      max-width: 280px;
+    }
   }
 </style>
 <script>

@@ -206,7 +206,7 @@ MRMD Server mirrors the Electron app's IPC interface as an HTTP API:
 |----------------|-------------------|
 | `electronAPI.project.get(path)` | `GET /api/project?path=...` |
 | `electronAPI.file.write(path, content)` | `POST /api/file/write` |
-| `electronAPI.session.forDocument(path)` | `POST /api/session/for-document` |
+| `electronAPI.runtime.forDocument(path)` | `POST /api/runtime/for-document` |
 | `ipcRenderer.on('project:changed', cb)` | WebSocket `/events` |
 
 The browser loads an HTTP shim that creates `window.electronAPI` making HTTP calls instead of IPC. The UI code works unchanged.
@@ -243,9 +243,9 @@ All `/api/*` endpoints require authentication. Provide token via:
 | `GET /api/project?path=...` | Get project info |
 | `GET /api/file/read?path=...` | Read file |
 | `POST /api/file/write` | Write file |
-| `POST /api/session/for-document` | Get/create session for document |
+| `POST /api/runtime/for-document` | Get/create runtime for document |
 | `GET /api/runtime` | List active runtimes |
-| `DELETE /api/runtime/:id` | Kill a runtime |
+| `DELETE /api/runtime/:id` | Stop a runtime |
 
 ### WebSocket Events
 
@@ -267,7 +267,7 @@ MRMD Server supports **R, Julia, and Ruby** runtimes (in addition to Python and 
 
 | Priority | Source | How to configure | Use case |
 |----------|--------|-----------------|----------|
-| 1 | **Remote URL** | `MRMD_R_URL=http://host:port` | Runtime runs on another machine (cloud/feuille.dev) |
+| 1 | **Remote URL** | `MRMD_R_URL=http://host:port` | Runtime runs on another machine (cloud/markco.dev) |
 | 2 | **Explicit directory** | `MRMD_R_DIR=/path/to/mrmd-r` | Point to a local checkout |
 | 3 | **Sibling monorepo** | (automatic) | Development mode in mrmd-packages/ |
 | 4 | **Vendor bundle** | (automatic) | Shipped with mrmd-server for npx users |
@@ -287,7 +287,7 @@ Replace `R` with the language: `R`, `JULIA`, or `RUBY`.
 
 ### Remote Runtimes (Cloud Mode)
 
-When a `MRMD_{LANG}_URL` is set, the server does **not** spawn a local process. Instead it registers a virtual session pointing to the remote URL. This is how [feuille.dev](https://feuille.dev) runs runtimes on separate containers:
+When a `MRMD_{LANG}_URL` is set, the server does **not** spawn a local process. Instead it registers a virtual session pointing to the remote URL. This is how [markco.dev](https://markco.dev) runs runtimes on separate containers:
 
 ```bash
 # Runtime container runs mrmd-r on port 9001
