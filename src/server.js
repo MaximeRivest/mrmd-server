@@ -13,6 +13,7 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'module';
+import { Readable } from 'stream';
 
 const require = createRequire(import.meta.url);
 
@@ -241,9 +242,30 @@ export async function createServer(config) {
         }
       });
 
-      // Forward response body as raw bytes (important for binary assets like PNGs)
-      const data = Buffer.from(await response.arrayBuffer());
-      res.send(data);
+      // Stream response body to preserve SSE/chunked behavior for execute/stream.
+      // Also works for binary assets without buffering entire payload in memory.
+      if (!response.body) {
+        res.end();
+        return;
+      }
+
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      if (contentType.includes('text/event-stream')) {
+        // Keep SSE connection semantics explicit on downstream response
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+      }
+
+      const nodeStream = Readable.fromWeb(response.body);
+      nodeStream.on('error', (streamErr) => {
+        console.error(`[proxy] Stream error from ${targetUrl}:`, streamErr.message);
+        if (!res.headersSent) {
+          res.status(502).json({ error: `Proxy stream error: ${streamErr.message}` });
+        } else {
+          res.end();
+        }
+      });
+      nodeStream.pipe(res);
     } catch (err) {
       console.error(`[proxy] Failed to proxy to ${targetUrl}:`, err.message);
       res.status(502).json({ error: `Proxy error: ${err.message}` });
