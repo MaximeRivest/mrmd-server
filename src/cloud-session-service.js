@@ -1,35 +1,63 @@
 /**
- * CloudSessionService — drop-in replacement for SessionService
+ * CloudSessionService — hybrid runtime manager for cloud mode
  *
- * Instead of spawning mrmd-python as a child process, this connects
- * to a pre-existing runtime container's MRP endpoint. Used when
- * mrmd-server runs inside an editor container (CLOUD_MODE=1).
+ * Python:       Routes to a pre-existing runtime container (RUNTIME_PORT)
+ * Bash/R/Julia/PTY: Spawns local child processes via RuntimeService
  *
- * The runtime container is started by the orchestrator/compute-manager
- * and its port is passed via RUNTIME_PORT env var.
+ * Used when mrmd-server runs inside an editor container (CLOUD_MODE=1).
+ * The Python runtime container is started by the orchestrator/compute-manager.
  */
+
+import { RuntimeService } from './services.js';
+
+/** Languages handled by the external runtime container */
+const CLOUD_LANGUAGES = new Set(['python', 'py', 'python3']);
 
 class CloudSessionService {
   constructor(runtimePort, runtimeHost) {
     this.runtimePort = runtimePort;
     this.runtimeHost = runtimeHost || '127.0.0.1';
     this.homeDir = process.env.CLOUD_HOME || process.env.HOME || '/home/ubuntu';
-    this.sessions = new Map();
+    this.pythonSessions = new Map();
     this.defaultRuntime = null;
+
+    // Local RuntimeService for bash, R, Julia, PTY
+    this.localService = new RuntimeService();
   }
 
   /**
-   * List all sessions.
-   * In cloud mode there's typically one session per runtime container.
+   * Is this language handled by the cloud runtime container?
    */
-  list() {
-    return Array.from(this.sessions.values());
+  _isCloudLanguage(language) {
+    return CLOUD_LANGUAGES.has((language || '').toLowerCase());
   }
 
   /**
-   * Start a session — in cloud mode, just registers the pre-existing runtime.
+   * List all sessions (cloud Python + local runtimes).
+   */
+  list(language) {
+    const cloud = Array.from(this.pythonSessions.values());
+    const local = this.localService.list(language);
+
+    if (language) {
+      if (this._isCloudLanguage(language)) return cloud;
+      return local;
+    }
+    return [...cloud, ...local];
+  }
+
+  /**
+   * Start a session.
+   * Python → register cloud runtime.  Others → delegate to local RuntimeService.
    */
   async start(config) {
+    const language = config.language || 'python';
+
+    if (!this._isCloudLanguage(language)) {
+      return this.localService.start(config);
+    }
+
+    // Cloud Python: register pre-existing runtime container
     const name = config.name || 'default';
     const port = this.runtimePort;
 
@@ -45,7 +73,9 @@ class CloudSessionService {
 
     const info = {
       name,
+      language: 'python',
       port,
+      url: `http://${this.runtimeHost}:${port}/mrp/v1`,
       pid: null,
       venv: null,
       cwd: config.cwd || this.homeDir,
@@ -54,127 +84,169 @@ class CloudSessionService {
       cloud: true,
     };
 
-    this.sessions.set(name, info);
+    this.pythonSessions.set(name, info);
     if (!this.defaultRuntime) this.defaultRuntime = name;
 
     return info;
   }
 
   /**
-   * Stop a session — in cloud mode, we don't kill the runtime container
-   * (that's the orchestrator's job). Just deregister locally.
+   * Stop a session.
    */
   async stop(sessionName) {
-    this.sessions.delete(sessionName);
-    return true;
+    if (this.pythonSessions.has(sessionName)) {
+      this.pythonSessions.delete(sessionName);
+      return true;
+    }
+    return this.localService.stop(sessionName);
   }
 
   /**
-   * Restart — re-verify the runtime is alive.
+   * Restart a session.
    */
   async restart(sessionName) {
-    const session = this.sessions.get(sessionName);
-    const config = session ? { name: sessionName, cwd: session.cwd } : { name: sessionName };
-    this.sessions.delete(sessionName);
-    return this.start(config);
+    if (this.pythonSessions.has(sessionName)) {
+      const session = this.pythonSessions.get(sessionName);
+      const config = { name: sessionName, language: 'python', cwd: session?.cwd };
+      this.pythonSessions.delete(sessionName);
+      return this.start(config);
+    }
+    return this.localService.restart(sessionName);
   }
 
   /**
-   * Attach to a session.
+   * Attach to an existing session.
    */
   attach(sessionName) {
-    const session = this.sessions.get(sessionName);
-    return session || null;
+    const cloudSession = this.pythonSessions.get(sessionName);
+    if (cloudSession) return cloudSession;
+    return this.localService.attach(sessionName);
   }
 
   /**
-   * Get or create session for a document.
-   * In cloud mode, always returns the runtime container's port.
-   * Auto-starts (registers) the session if needed.
+   * Get or create ALL runtimes needed for a document.
+   * Python → cloud container.  Bash/R/Julia/PTY → local RuntimeService.
    */
   async getForDocument(documentPath, projectConfig, frontmatter, projectRoot) {
-    // Derive a session name from the project
+    const results = {};
+
+    // Python: cloud runtime
     const projectName = projectRoot ? projectRoot.split('/').pop() : 'default';
-    const name = `${projectName}:default`;
+    const pythonName = `${projectName}:python:default`;
 
-    const existing = this.sessions.get(name);
-    if (existing?.alive) {
-      return existing;
+    const existingPython = this.pythonSessions.get(pythonName);
+    if (existingPython?.alive) {
+      results.python = { ...existingPython, autoStart: true, available: true };
+    } else {
+      try {
+        const info = await this.start({ name: pythonName, language: 'python', cwd: projectRoot || this.homeDir });
+        results.python = {
+          ...info,
+          autoStart: true,
+          available: true,
+        };
+      } catch (err) {
+        results.python = {
+          name: pythonName,
+          language: 'python',
+          port: null,
+          alive: false,
+          autoStart: true,
+          available: false,
+          error: err.message,
+        };
+      }
     }
 
-    // Auto-register the runtime container as a session
-    try {
-      const info = await this.start({ name, cwd: projectRoot || this.homeDir });
-      return {
-        name,
-        port: info.port,
-        alive: true,
-        autoStart: true,
-        venv: null,
-        cwd: info.cwd,
-        pid: null,
-        startedAt: info.startedAt,
-      };
-    } catch (err) {
-      return {
-        name,
-        port: null,
-        alive: false,
-        autoStart: true,
-        venv: null,
-        cwd: projectRoot || this.homeDir,
-        pid: null,
-        error: err.message,
-      };
+    // Other languages: delegate to local RuntimeService
+    const localResults = await this.localService.getForDocument(
+      documentPath, projectConfig, frontmatter, projectRoot,
+    );
+
+    // Merge: local results for non-Python, cloud result for Python
+    for (const [lang, info] of Object.entries(localResults)) {
+      if (lang !== 'python') {
+        results[lang] = info;
+      }
     }
+
+    return results;
   }
 
   /**
-   * Update the runtime port and/or host (called by orchestrator after CRIU migration).
-   * Updates all existing sessions to point to the new location.
+   * Get or create a runtime for a specific language.
+   */
+  async getForDocumentLanguage(language, documentPath, projectConfig, frontmatter, projectRoot) {
+    if (this._isCloudLanguage(language)) {
+      const projectName = projectRoot ? projectRoot.split('/').pop() : 'default';
+      const name = `${projectName}:python:default`;
+
+      const existing = this.pythonSessions.get(name);
+      if (existing?.alive) {
+        return { ...existing, autoStart: true, available: true };
+      }
+
+      try {
+        const info = await this.start({ name, language: 'python', cwd: projectRoot || this.homeDir });
+        return { ...info, autoStart: true, available: true };
+      } catch (err) {
+        return {
+          name,
+          language: 'python',
+          port: null,
+          alive: false,
+          autoStart: true,
+          available: false,
+          error: err.message,
+        };
+      }
+    }
+
+    // Non-Python: delegate to local RuntimeService
+    return this.localService.getForDocumentLanguage(
+      language, documentPath, projectConfig, frontmatter, projectRoot,
+    );
+  }
+
+  /**
+   * Check if a language is available.
+   */
+  isAvailable(language) {
+    if (this._isCloudLanguage(language)) return { available: true };
+    return this.localService.isAvailable(language);
+  }
+
+  /**
+   * List ALL supported languages (cloud + local).
+   */
+  supportedLanguages() {
+    return ['python', ...this.localService.supportedLanguages().filter(l => l !== 'python')];
+  }
+
+  /**
+   * Update the cloud runtime port/host (called after CRIU migration).
    */
   updateRuntimePort(newPort, newHost) {
     const oldPort = this.runtimePort;
     const oldHost = this.runtimeHost;
     this.runtimePort = newPort;
     if (newHost) this.runtimeHost = newHost;
-    for (const [name, session] of this.sessions) {
+    for (const [, session] of this.pythonSessions) {
       session.port = newPort;
+      session.url = `http://${this.runtimeHost}:${newPort}/mrp/v1`;
     }
     console.log(`[cloud-session] Runtime updated: ${oldHost}:${oldPort} → ${this.runtimeHost}:${newPort}`);
-    return { oldPort, newPort, oldHost, newHost: this.runtimeHost, sessionsUpdated: this.sessions.size };
+    return { oldPort, newPort, oldHost, newHost: this.runtimeHost, sessionsUpdated: this.pythonSessions.size };
   }
 
   /**
-   * Get or create runtime for a specific language.
-   * In cloud mode, all languages route to the same runtime container.
-   */
-  async getForDocumentLanguage(language, documentPath, projectConfig, frontmatter, projectRoot) {
-    // Cloud mode: single runtime handles everything
-    return this.getForDocument(documentPath, projectConfig, frontmatter, projectRoot);
-  }
-
-  /**
-   * Check if a language is available.
-   * In cloud mode, the runtime container handles whatever it supports.
-   */
-  isAvailable(language) {
-    return { available: true };
-  }
-
-  /**
-   * List supported languages.
-   * In cloud mode, Python is the primary; others depend on container image.
-   */
-  supportedLanguages() {
-    return ['python'];
-  }
-
-  /**
-   * Shutdown — no-op in cloud mode.
+   * Shutdown all sessions.
    */
   shutdown() {
-    this.sessions.clear();
+    this.pythonSessions.clear();
+    if (typeof this.localService.shutdown === 'function') {
+      this.localService.shutdown();
+    }
   }
 }
 
