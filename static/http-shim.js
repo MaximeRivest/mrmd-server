@@ -110,6 +110,39 @@
   const POST = (path, body) => apiCall('POST', path, body);
   const DELETE = (path) => apiCall('DELETE', path);
 
+  const DOC_EXTENSIONS = ['.md', '.qmd'];
+
+  function basenameFromPath(filePath = '') {
+    const normalized = String(filePath).replace(/\\/g, '/').replace(/\/+/g, '/');
+    const parts = normalized.split('/').filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : '';
+  }
+
+  function dirnameFromPath(filePath = '') {
+    const normalized = String(filePath).replace(/\\/g, '/').replace(/\/+/g, '/');
+    const lastSlash = normalized.lastIndexOf('/');
+    if (lastSlash <= 0) return normalized.startsWith('/') ? '/' : '.';
+    return normalized.slice(0, lastSlash) || '/';
+  }
+
+  function stripDocExtension(fileName = '') {
+    const lower = fileName.toLowerCase();
+    for (const ext of DOC_EXTENSIONS) {
+      if (lower.endsWith(ext)) {
+        return fileName.slice(0, -ext.length);
+      }
+    }
+    return fileName;
+  }
+
+  function makeRuntimeIdFromVenv(venvPath = '', forceNew = false) {
+    const venvName = basenameFromPath(venvPath).replace(/^\.+/, '') || 'venv';
+    const projectName = basenameFromPath(dirnameFromPath(venvPath)).replace(/^\.+/, '') || 'project';
+    let name = `${projectName}:${venvName}`.replace(/[^a-zA-Z0-9-:]/g, '-');
+    if (forceNew) name += '-' + Date.now().toString(36).slice(-4);
+    return name;
+  }
+
   // ==========================================================================
   // WebSocket for Events
   // ==========================================================================
@@ -322,8 +355,20 @@
       GET(`/api/file/preview?path=${encodeURIComponent(filePath)}&lines=${lines || 40}`)
         .then(r => r.content),
 
-    getFileInfo: (filePath) =>
-      GET(`/api/file/info?path=${encodeURIComponent(filePath)}`),
+    getFileInfo: async (filePath) => {
+      try {
+        const info = await GET(`/api/file/info?path=${encodeURIComponent(filePath)}`);
+        return {
+          success: true,
+          ...info,
+        };
+      } catch (err) {
+        return {
+          success: false,
+          error: err.message,
+        };
+      }
+    },
 
     // ========================================================================
     // Venv creation (still useful for setup flows)
@@ -331,6 +376,109 @@
 
     createVenv: (venvPath) =>
       POST('/api/system/create-venv', { venvPath }),
+
+    installMrmdPython: (venvPath) =>
+      POST('/api/system/install-mrmd-python', { venvPath }),
+
+    startPython: async (venvPath, forceNew = false) => {
+      try {
+        const runtimeId = makeRuntimeIdFromVenv(venvPath, forceNew);
+        const cwd = dirnameFromPath(venvPath);
+        const result = await POST('/api/runtime', {
+          config: {
+            name: runtimeId,
+            language: 'python',
+            cwd,
+            venv: venvPath,
+          },
+        });
+
+        return {
+          success: true,
+          port: result.port,
+          runtimeId,
+          venv: result.venv || venvPath,
+          url: result.url,
+        };
+      } catch (err) {
+        return {
+          success: false,
+          error: err.message,
+        };
+      }
+    },
+
+    attachRuntime: async (runtimeId) => {
+      try {
+        const result = await POST(`/api/runtime/${encodeURIComponent(runtimeId)}/attach`, {});
+        return {
+          success: true,
+          port: result.port,
+          url: result.url,
+          venv: result.venv,
+        };
+      } catch (err) {
+        return {
+          success: false,
+          error: err.message,
+        };
+      }
+    },
+
+    openFile: async (filePath) => {
+      try {
+        // Ensure project is detected and sync server is available.
+        const project = await GET(`/api/project?path=${encodeURIComponent(filePath)}`);
+        const projectDir = project?.root || dirnameFromPath(filePath);
+
+        let syncPort = project?.syncPort;
+        if (!syncPort) {
+          const sync = await POST('/api/project/sync/acquire', { projectDir });
+          syncPort = sync.port;
+        }
+
+        // Mirror Electron behavior: track recent file usage.
+        try {
+          await POST('/api/system/recent', { file: filePath });
+        } catch (err) {
+          console.warn('[http-shim] Failed to update recent file:', err.message);
+        }
+
+        const fileName = basenameFromPath(filePath);
+        const docName = stripDocExtension(fileName);
+
+        return {
+          success: true,
+          syncPort,
+          docName,
+          pythonPort: null,
+          projectDir,
+        };
+      } catch (err) {
+        return {
+          success: false,
+          error: err.message,
+        };
+      }
+    },
+
+    listRuntimes: async () => {
+      try {
+        const runtimes = await GET('/api/runtime');
+        return { runtimes };
+      } catch (err) {
+        return { runtimes: [], error: err.message };
+      }
+    },
+
+    killRuntime: async (runtimeId) => {
+      try {
+        await DELETE(`/api/runtime/${encodeURIComponent(runtimeId)}`);
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
+    },
 
     // ========================================================================
     // PROJECT SERVICE
