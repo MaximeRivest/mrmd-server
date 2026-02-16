@@ -522,7 +522,19 @@
 
       restart: (sessionName) => POST(`/api/runtime/${encodeURIComponent(sessionName)}/restart`, {}),
 
-      forDocument: (documentPath) => POST('/api/runtime/for-document', { documentPath }),
+      forDocument: async (documentPath) => {
+        const result = await POST('/api/runtime/for-document', { documentPath });
+
+        // Backwards compatibility: legacy renderer expects a single Python session object.
+        // Unified runtime API returns { python, bash, r, julia, pty }.
+        if (result && typeof result === 'object' && !Array.isArray(result)) {
+          if (result.python && typeof result.python === 'object') {
+            return result.python;
+          }
+        }
+
+        return result;
+      },
 
       forDocumentLanguage: (documentPath, language) =>
         POST(`/api/runtime/for-document/${encodeURIComponent(language)}`, { documentPath }),
