@@ -250,6 +250,18 @@ export function createRuntimeRoutes(ctx) {
   });
 
   /**
+   * GET /api/runtime/provider
+   * Return connected machine-provider info for tunnel mode.
+   */
+  router.get('/provider', (req, res) => {
+    const provider = ctx.tunnelClient?.getProvider?.() || null;
+    res.json({
+      available: !!provider,
+      provider,
+    });
+  });
+
+  /**
    * GET /api/runtime/languages
    * List all supported languages.
    */

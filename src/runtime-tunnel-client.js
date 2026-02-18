@@ -31,6 +31,7 @@ export class RuntimeTunnelClient {
     this._destroyed = false;
     this._reconnectTimer = null;
     this._providerAvailable = false;
+    this._provider = null;
 
     /** Ports that belong to the Electron's runtimes (route through tunnel) */
     this._tunnelPorts = new Set();
@@ -77,6 +78,7 @@ export class RuntimeTunnelClient {
 
     this.ws.on('close', () => {
       this._providerAvailable = false;
+      this._provider = null;
       this._tunnelPorts.clear();
       this._cloudToLocalRoots.clear();
       // Reject all pending requests
@@ -113,18 +115,27 @@ export class RuntimeTunnelClient {
     switch (msg.t) {
       case 'provider-status':
         this._providerAvailable = msg.available;
+        this._provider = msg.provider || this._provider;
         console.log(`[tunnel-client] Provider ${msg.available ? 'available' : 'unavailable'}`);
         break;
 
       case 'provider-gone':
         this._providerAvailable = false;
+        this._provider = null;
         this._tunnelPorts.clear();
         console.log('[tunnel-client] Provider disconnected');
         break;
 
       case 'provider-info':
         this._providerAvailable = true;
-        console.log('[tunnel-client] Provider info:', msg.capabilities);
+        this._provider = {
+          ...(this._provider || {}),
+          machineId: msg.machineId || this._provider?.machineId || null,
+          machineName: msg.machineName || this._provider?.machineName || null,
+          hostname: msg.hostname || this._provider?.hostname || null,
+          capabilities: msg.capabilities || this._provider?.capabilities || [],
+        };
+        console.log('[tunnel-client] Provider info:', this._provider);
         break;
 
       case 'runtime-started':
@@ -179,6 +190,11 @@ export class RuntimeTunnelClient {
   /** Is this port a tunneled Electron port? */
   isTunnelPort(port) {
     return this._tunnelPorts.has(Number(port));
+  }
+
+  /** Current provider metadata (machine info), if connected */
+  getProvider() {
+    return this._providerAvailable ? (this._provider || null) : null;
   }
 
   /**
