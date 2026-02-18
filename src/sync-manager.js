@@ -3,6 +3,9 @@
  *
  * Ported from mrmd-electron/main.js to provide dynamic per-project sync servers.
  * Allows mrmd-server to handle files from any project, not just a fixed projectDir.
+ *
+ * In cloud mode (CLOUD_MODE=1 + SYNC_RELAY_URL), after starting a local mrmd-sync,
+ * also bridges each document to the cloud relay for bidirectional cross-device sync.
  */
 
 import { spawn } from 'child_process';
@@ -16,6 +19,9 @@ import { fileURLToPath } from 'url';
 import { findFreePort, waitForPort, isProcessAlive } from 'mrmd-electron/src/utils/index.js';
 import { SYNC_SERVER_MEMORY_MB, DIR_HASH_LENGTH } from 'mrmd-electron/src/config.js';
 
+// Relay bridge for cloud mode
+import { RelayBridge } from './relay-bridge.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -24,6 +30,21 @@ const syncServers = new Map();
 
 // Event listeners for sync death notifications
 const syncDeathListeners = new Set();
+
+// Cloud relay bridge (initialized lazily in cloud mode)
+let relayBridge = null;
+
+const CLOUD_MODE = process.env.CLOUD_MODE === '1';
+const SYNC_RELAY_URL = process.env.SYNC_RELAY_URL || '';
+const CLOUD_USER_ID = process.env.CLOUD_USER_ID || '';
+
+if (CLOUD_MODE && SYNC_RELAY_URL && CLOUD_USER_ID) {
+  relayBridge = new RelayBridge({
+    relayWsUrl: SYNC_RELAY_URL,
+    userId: CLOUD_USER_ID,
+  });
+  console.log(`[sync] Cloud relay bridge initialized: ${SYNC_RELAY_URL} (user: ${CLOUD_USER_ID})`);
+}
 
 /**
  * Hash a directory path to a short, filesystem-safe string
@@ -55,6 +76,34 @@ function resolvePackageBin(packageName, binPath) {
     }
     throw new Error(`Cannot resolve ${packageName}: ${e.message}`);
   }
+}
+
+/**
+ * Discover .md/.qmd document names in a project directory.
+ */
+function discoverDocNames(projectDir) {
+  const docs = [];
+  try {
+    const walk = (dir) => {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name.startsWith('.') || entry.name === 'node_modules' ||
+            entry.name === '.venv' || entry.name === '__pycache__' ||
+            entry.name === '_assets') continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+        } else if (entry.name.endsWith('.md') || entry.name.endsWith('.qmd')) {
+          // Convert to doc name (relative, without extension)
+          const rel = path.relative(projectDir, full).replace(/\\/g, '/');
+          const docName = rel.replace(/\.(md|qmd)$/i, '');
+          docs.push(docName);
+        }
+      }
+    };
+    walk(projectDir);
+  } catch { /* ignore scan errors */ }
+  return docs;
 }
 
 /**
@@ -105,6 +154,17 @@ export async function acquireSyncServer(projectDir) {
     const server = syncServers.get(dirHash);
     server.refCount++;
     console.log(`[sync] Reusing server for ${projectDir} on port ${server.port} (refCount: ${server.refCount})`);
+
+    // In cloud mode, re-bridge any new docs that appeared since last call
+    // (e.g., seeded by the project watcher while the sync server was running)
+    if (relayBridge) {
+      try {
+        const projectName = path.basename(projectDir);
+        const docs = discoverDocNames(projectDir);
+        relayBridge.bridgeProject(server.port, projectDir, projectName, docs);
+      } catch { /* ignore */ }
+    }
+
     return server;
   }
 
@@ -150,6 +210,11 @@ export async function acquireSyncServer(projectDir) {
     console.log(`[sync:${port}] Exited with code ${code}, signal ${signal}`);
     syncServers.delete(dirHash);
 
+    // Stop relay bridge for this project
+    if (relayBridge) {
+      relayBridge.stopProject(projectDir).catch(() => {});
+    }
+
     if (!proc.expectedExit) {
       notifySyncDied(projectDir, code, signal);
     }
@@ -159,6 +224,19 @@ export async function acquireSyncServer(projectDir) {
 
   const server = { proc, port, dir: projectDir, refCount: 1, owned: true };
   syncServers.set(dirHash, server);
+
+  // Bridge to cloud relay in cloud mode
+  if (relayBridge) {
+    try {
+      const projectName = path.basename(projectDir);
+      const docs = discoverDocNames(projectDir);
+      console.log(`[sync] Bridging ${projectName} to relay (${docs.length} docs)`);
+      relayBridge.bridgeProject(port, projectDir, projectName, docs);
+    } catch (err) {
+      console.error(`[sync] Failed to bridge to relay:`, err.message);
+    }
+  }
+
   return server;
 }
 
@@ -181,6 +259,11 @@ export function releaseSyncServer(projectDir) {
     server.proc.expectedExit = true;
     server.proc.kill('SIGTERM');
     syncServers.delete(dirHash);
+
+    // Stop relay bridge for this project
+    if (relayBridge) {
+      relayBridge.stopProject(projectDir).catch(() => {});
+    }
   }
 }
 
@@ -220,4 +303,9 @@ export function stopAllSyncServers() {
     }
   }
   syncServers.clear();
+
+  // Stop all relay bridges
+  if (relayBridge) {
+    relayBridge.stopAll().catch(() => {});
+  }
 }

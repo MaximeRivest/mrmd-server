@@ -54,6 +54,12 @@ import {
 // Import AI service for mrmd-ai server management
 import { stopAiServer } from './ai-service.js';
 
+// Cloud seeding: materialize relay documents to filesystem on startup
+import { seedFromRelay, startProjectWatcher } from './cloud-seed.js';
+
+// Runtime tunnel: route MRP traffic through Electron when available
+import { RuntimeTunnelClient } from './runtime-tunnel-client.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
@@ -107,6 +113,56 @@ export async function createServer(config) {
   const cloudMode = process.env.CLOUD_MODE === '1';
   const runtimePort = parseInt(process.env.RUNTIME_PORT || '0', 10);
 
+  // Cloud seeding: materialize relay documents to the local filesystem
+  // so they appear in the nav tree when the editor loads.
+  // This runs before the server starts accepting requests.
+  if (cloudMode && process.env.SYNC_RELAY_URL && process.env.CLOUD_USER_ID) {
+    const relayHttpUrl = process.env.SYNC_RELAY_URL.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
+    try {
+      const seedResult = await seedFromRelay({
+        relayUrl: relayHttpUrl,
+        userId: process.env.CLOUD_USER_ID,
+        homeDir: projectDir || process.env.HOME || '/home/ubuntu',
+      });
+      console.log(`[server] Cloud seed: ${seedResult.seededProjects.length} projects, ${seedResult.seededDocs} docs`);
+    } catch (err) {
+      console.warn(`[server] Cloud seed failed (non-fatal): ${err.message}`);
+    }
+
+    // Start periodic watcher for new projects/docs from the relay
+    const _projectWatcher = startProjectWatcher({
+      relayUrl: relayHttpUrl,
+      userId: process.env.CLOUD_USER_ID,
+      homeDir: projectDir || process.env.HOME || '/home/ubuntu',
+      intervalMs: 30000,
+      onNewDocs({ project, projectDir: projDir, docs }) {
+        // New docs have been seeded to the filesystem.
+        // If there's an active sync server for this project, calling
+        // acquireSyncServer again will re-bridge the new docs (it
+        // rescans the filesystem on reuse in cloud mode).
+        const existingServer = getSyncServer(projDir);
+        if (existingServer) {
+          console.log(`[server] New docs seeded for "${project}" — triggering re-bridge via acquireSyncServer`);
+          acquireSyncServer(projDir).catch(() => {});
+        }
+        // Emit event so open browser tabs can refresh their nav tree
+        eventBus.emit('project-updated', { project, newDocs: docs });
+      },
+    });
+  }
+
+  // Runtime tunnel: connect to the relay as a consumer so we can route
+  // MRP traffic to the Electron desktop app when it's online.
+  let tunnelClient = null;
+  if (cloudMode && process.env.SYNC_RELAY_URL && process.env.CLOUD_USER_ID) {
+    tunnelClient = new RuntimeTunnelClient({
+      relayUrl: process.env.SYNC_RELAY_URL,
+      userId: process.env.CLOUD_USER_ID,
+    });
+    tunnelClient.start();
+    console.log('[server] Runtime tunnel client started');
+  }
+
   // Instantiate services
   const projectService = new ProjectService();
   const runtimeHost = process.env.RUNTIME_HOST || '127.0.0.1';
@@ -136,6 +192,9 @@ export async function createServer(config) {
     fileService,
     assetService,
     settingsService,
+
+    // Runtime tunnel (routes MRP traffic to Electron when available)
+    tunnelClient,
 
     // Sync server management (dynamic per-project)
     acquireSyncServer,
@@ -200,6 +259,25 @@ export async function createServer(config) {
   app.use('/proxy/:port', async (req, res) => {
     const { port } = req.params;
     const targetPath = req.url; // Includes query string
+
+    // Route runtime HTTP traffic through tunnel when available.
+    const portInt = parseInt(port);
+    const isKnownTunnelPort = tunnelClient?.isTunnelPort(portInt);
+    const isRuntimePort = runtimeService.runtimePort === portInt;
+    const isMrpPath = targetPath.startsWith('/mrp/');
+    const shouldUseTunnel = tunnelClient?.isAvailable() &&
+      (isKnownTunnelPort || (isMrpPath && !isRuntimePort && portInt !== aiPort));
+    if (shouldUseTunnel) {
+      try {
+        await tunnelClient.httpProxy(portInt, req, res);
+      } catch (err) {
+        if (!res.headersSent) {
+          res.status(502).json({ error: `Tunnel proxy error: ${err.message}` });
+        }
+      }
+      return;
+    }
+
     // Route runtime traffic to the (possibly remote) runtime host
     const host = (runtimeService.runtimeHost && parseInt(port) === runtimeService.runtimePort)
       ? runtimeService.runtimeHost : '127.0.0.1';
@@ -396,6 +474,22 @@ export async function createServer(config) {
     const syncMatch = url.pathname.match(/^\/sync\/(\d+)\/(.+)$/);
     if (syncMatch) {
       const [, syncPort, pathPart] = syncMatch;
+
+      // Route runtime WebSocket traffic (PTY/MRP) through tunnel when available.
+      // IMPORTANT: Do NOT tunnel document sync sockets (e.g. /sync/36433/02-term).
+      const portNum = parseInt(syncPort);
+      const tunnelAvail = tunnelClient?.isAvailable();
+      const isKnownTunnel = tunnelClient?.isTunnelPort(portNum);
+      const isRuntimeWsPath = pathPart.startsWith('api/pty') || pathPart.startsWith('mrp/');
+      const shouldTunnel = tunnelAvail && (isKnownTunnel || isRuntimeWsPath);
+      if (shouldTunnel) {
+        console.log(`[sync-ws] Routing runtime WS port ${portNum} through tunnel: ${pathPart}`);
+        syncWss.handleUpgrade(request, socket, head, (clientWs) => {
+          tunnelClient.wsProxy(portNum, `${pathPart}${url.search}`, clientWs);
+        });
+        return;
+      }
+
       // Preserve query string for PTY sessions
       const targetUrl = `ws://127.0.0.1:${syncPort}/${pathPart}${url.search}`;
 

@@ -149,6 +149,24 @@ export function createRuntimeRoutes(ctx) {
         }
       }
 
+      // If the Electron desktop runtime tunnel is available, route to it
+      // so code runs on the user's laptop instead of the server.
+      if (ctx.tunnelClient?.isAvailable()) {
+        try {
+          const tunnelResult = await ctx.tunnelClient.startRuntime({
+            documentPath,
+            projectRoot,
+            projectConfig,
+            frontmatter,
+          });
+          console.log('[runtime:forDocument] Using tunnel — runtimes from Electron');
+          return res.json(tunnelResult);
+        } catch (err) {
+          console.warn('[runtime:forDocument] Tunnel failed, falling back to local:', err.message);
+          // Fall through to local runtimes
+        }
+      }
+
       const result = await runtimeService.getForDocument(
         documentPath, projectConfig, frontmatter, projectRoot
       );
@@ -190,6 +208,26 @@ export function createRuntimeRoutes(ctx) {
           frontmatter = Project.parseFrontmatter(content);
         } catch {
           frontmatter = null;
+        }
+      }
+
+      // Try tunnel first
+      if (ctx.tunnelClient?.isAvailable()) {
+        try {
+          const tunnelResult = await ctx.tunnelClient.startRuntime({
+            language,
+            documentPath,
+            projectRoot,
+            projectConfig,
+            frontmatter,
+          });
+          const langResult = tunnelResult?.[language];
+          if (langResult) {
+            console.log(`[runtime:forDocument:${language}] Using tunnel — runtime from Electron`);
+            return res.json(langResult);
+          }
+        } catch (err) {
+          console.warn(`[runtime:forDocument:${language}] Tunnel failed, falling back:`, err.message);
         }
       }
 
