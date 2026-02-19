@@ -264,9 +264,69 @@ export function startProjectWatcher(opts) {
     }
   }
 
+  /**
+   * Poll the catalog API to create stub files for docs that exist on machines
+   * but haven't been bridged yet (so they won't be in the documents table).
+   * This ensures the file browser shows all docs from all connected machines.
+   */
+  async function pollCatalog() {
+    try {
+      const catalogUrl = `${relayUrl}/api/catalog/${encodeURIComponent(userId)}`;
+      const res = await fetch(catalogUrl, {
+        headers: { 'X-User-Id': userId },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data?.machines) return;
+
+      for (const machine of data.machines) {
+        for (const proj of machine.projects || []) {
+          const projectName = proj.name;
+          if (projectName === 'desktop-e2e') continue;
+
+          for (const doc of proj.documents || []) {
+            const key = `${projectName}/${doc.docPath}`;
+            if (seededSet.has(key)) continue;
+
+            // Create stub file so it appears in the nav tree
+            const projectDir = join(homeDir, projectName);
+            const filePath = join(projectDir, `${doc.docPath}.md`);
+
+            if (existsSync(filePath)) {
+              seededSet.add(key);
+              continue;
+            }
+
+            try {
+              mkdirSync(dirname(filePath), { recursive: true });
+
+              // Create mrmd.md config if missing
+              const mrmdPath = join(projectDir, 'mrmd.md');
+              if (!existsSync(mrmdPath)) {
+                const mrmdContent = `# ${projectName}\n\n\`\`\`yaml config\nname: "${projectName}"\nsession:\n  python:\n    venv: ".venv"\n\`\`\`\n`;
+                writeFileSync(mrmdPath, mrmdContent, 'utf8');
+              }
+
+              // Write empty stub — real content loads on-demand when user opens it
+              writeFileSync(filePath, '', 'utf8');
+              seededSet.add(key);
+              console.log(`[cloud-seed:catalog] Stub: ${projectName}/${doc.docPath}`);
+            } catch { /* ignore */ }
+          }
+        }
+      }
+    } catch {
+      // Silent
+    }
+  }
+
   timer = setInterval(poll, intervalMs);
   // Run first poll after a short delay (let initial seed + bridges settle)
   setTimeout(poll, 5000);
+  // Also poll catalog periodically for stub creation
+  setInterval(pollCatalog, intervalMs * 2);
+  setTimeout(pollCatalog, 8000);
 
   return {
     stop() {
