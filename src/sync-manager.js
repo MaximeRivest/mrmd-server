@@ -195,6 +195,9 @@ export async function acquireSyncServer(projectDir) {
     `--max-old-space-size=${SYNC_SERVER_MEMORY_MB}`,
     syncCliPath,
     '--port', port.toString(),
+    // Cloud/editor projects may bridge a large number of docs.
+    '--max-connections', '1200',
+    '--max-per-doc', '100',
     '--i-know-what-i-am-doing',
     projectDir,
   ];
