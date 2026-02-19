@@ -255,9 +255,11 @@ export function createRuntimeRoutes(ctx) {
    */
   router.get('/provider', (req, res) => {
     const provider = ctx.tunnelClient?.getProvider?.() || null;
+    const machineInfo = ctx.tunnelClient?.getMachines?.() || { activeMachineId: null, machines: [] };
     res.json({
       available: !!provider,
       provider,
+      ...machineInfo,
     });
   });
 

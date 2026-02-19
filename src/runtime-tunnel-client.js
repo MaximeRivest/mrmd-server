@@ -32,6 +32,8 @@ export class RuntimeTunnelClient {
     this._reconnectTimer = null;
     this._providerAvailable = false;
     this._provider = null;
+    this._activeMachineId = null;
+    this._machines = [];
 
     /** Ports that belong to the Electron's runtimes (route through tunnel) */
     this._tunnelPorts = new Set();
@@ -79,6 +81,8 @@ export class RuntimeTunnelClient {
     this.ws.on('close', () => {
       this._providerAvailable = false;
       this._provider = null;
+      this._activeMachineId = null;
+      this._machines = [];
       this._tunnelPorts.clear();
       this._cloudToLocalRoots.clear();
       // Reject all pending requests
@@ -116,14 +120,18 @@ export class RuntimeTunnelClient {
       case 'provider-status':
         this._providerAvailable = msg.available;
         this._provider = msg.provider || this._provider;
-        console.log(`[tunnel-client] Provider ${msg.available ? 'available' : 'unavailable'}`);
+        this._activeMachineId = msg.activeMachineId || null;
+        this._machines = msg.machines || [];
+        console.log(`[tunnel-client] Provider ${msg.available ? 'available' : 'unavailable'} (active: ${this._activeMachineId || 'none'}, machines: ${this._machines.length})`);
         break;
 
       case 'provider-gone':
         this._providerAvailable = false;
         this._provider = null;
+        this._activeMachineId = null;
+        this._machines = [];
         this._tunnelPorts.clear();
-        console.log('[tunnel-client] Provider disconnected');
+        console.log('[tunnel-client] All providers disconnected');
         break;
 
       case 'provider-info':
@@ -192,9 +200,17 @@ export class RuntimeTunnelClient {
     return this._tunnelPorts.has(Number(port));
   }
 
-  /** Current provider metadata (machine info), if connected */
+  /** Current active provider metadata (machine info), if connected */
   getProvider() {
     return this._providerAvailable ? (this._provider || null) : null;
+  }
+
+  /** Get all connected machines from the tunnel. */
+  getMachines() {
+    return {
+      activeMachineId: this._activeMachineId,
+      machines: this._machines,
+    };
   }
 
   /**
@@ -337,9 +353,13 @@ export class RuntimeTunnelClient {
     const id = nextId();
     this._wsSessions.set(id, { clientWs });
 
-    // Forward client messages to tunnel
+    // Forward client messages to tunnel.
+    // IMPORTANT: In Node.js ws, `data` is always a Buffer regardless of
+    // frame type. Only `isBinary` correctly distinguishes text vs binary
+    // frames. Using Buffer.isBuffer() would incorrectly treat ALL messages
+    // as binary, breaking text-based protocols (PTY sends/expects text).
     clientWs.on('message', (data, isBinary) => {
-      if (isBinary || Buffer.isBuffer(data)) {
+      if (isBinary) {
         this._send({ t: 'ws-msg', id, data: Buffer.from(data).toString('base64'), bin: true });
       } else {
         this._send({ t: 'ws-msg', id, data: data.toString(), bin: false });
