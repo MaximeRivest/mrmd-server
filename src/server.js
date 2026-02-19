@@ -288,6 +288,40 @@ export async function createServer(config) {
         res.status(502).json({ error: 'machines unavailable' });
       }
     });
+
+    app.get('/api/machines/active', async (req, res) => {
+      try {
+        const upstream = await fetch(
+          `${relayHttpUrl}/api/tunnel/${encodeURIComponent(cloudUserId)}/active`,
+          { headers: { 'X-User-Id': cloudUserId }, signal: AbortSignal.timeout(10000) }
+        );
+        const body = await upstream.text();
+        res.status(upstream.status).type('json').send(body);
+      } catch (err) {
+        res.status(502).json({ error: 'active machine unavailable' });
+      }
+    });
+
+    app.post('/api/machines/active', async (req, res) => {
+      try {
+        const upstream = await fetch(
+          `${relayHttpUrl}/api/tunnel/${encodeURIComponent(cloudUserId)}/active`,
+          {
+            method: 'POST',
+            headers: {
+              'X-User-Id': cloudUserId,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ machineId: req.body?.machineId ?? null }),
+            signal: AbortSignal.timeout(10000),
+          }
+        );
+        const body = await upstream.text();
+        res.status(upstream.status).type('json').send(body);
+      } catch (err) {
+        res.status(502).json({ error: 'failed to set active machine' });
+      }
+    });
   }
 
   // Proxy for localhost services (bash, pty, ai, etc.)
@@ -889,6 +923,26 @@ function transformIndexHtml(html, host, port) {
   .cloud-account-menu .logout-btn {
     color: var(--error, #f85149);
   }
+  .cloud-machine-section {
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border, #30363d);
+  }
+  .cloud-machine-label {
+    font-size: 11px;
+    color: var(--text-muted, #8b949e);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  .cloud-machine-select {
+    width: 100%;
+    background: var(--bg-tertiary, #21262d);
+    border: 1px solid var(--border, #30363d);
+    color: var(--text, #c9d1d9);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 12px;
+  }
 
   /* ── Mobile: flow inside titlebar flex, don't overlap action buttons ── */
   @media (max-width: 768px) {
@@ -957,6 +1011,12 @@ function transformIndexHtml(html, host, port) {
                 '<span class="cloud-account-plan">' + (user.plan || 'free') + '</span>' +
               '</div>' +
             '</div>' +
+            '<div class="cloud-machine-section">' +
+              '<div class="cloud-machine-label">Runtime machine</div>' +
+              '<select id="cloud-machine-select" class="cloud-machine-select">' +
+                '<option value="">Auto-select</option>' +
+              '</select>' +
+            '</div>' +
             '<div class="cloud-account-menu">' +
               '<a href="/dashboard">Dashboard</a>' +
               '<div class="separator"></div>' +
@@ -982,6 +1042,49 @@ function transformIndexHtml(html, host, port) {
         dropdown.addEventListener('click', function(e) {
           e.stopPropagation();
         });
+
+        // Machine selector (active runtime provider)
+        const machineSelect = container.querySelector('#cloud-machine-select');
+        async function refreshMachines() {
+          try {
+            const [machinesRes, activeRes] = await Promise.all([
+              fetch(baseUrl + 'api/machines'),
+              fetch(baseUrl + 'api/machines/active'),
+            ]);
+            if (!machinesRes.ok) return;
+
+            const machinesData = await machinesRes.json();
+            const activeData = activeRes.ok ? await activeRes.json() : { activeMachineId: null };
+            const activeMachineId = activeData?.activeMachineId || '';
+
+            machineSelect.innerHTML = '<option value="">Auto-select</option>';
+            for (const m of (machinesData.machines || [])) {
+              const option = document.createElement('option');
+              option.value = m.machineId;
+              const status = m.status === 'online' ? '🟢' : '⚫';
+              option.textContent = status + ' ' + (m.machineName || m.machineId);
+              if (m.machineId === activeMachineId) option.selected = true;
+              machineSelect.appendChild(option);
+            }
+          } catch (err) {
+            // Non-fatal
+          }
+        }
+
+        machineSelect.addEventListener('change', async function() {
+          try {
+            await fetch(baseUrl + 'api/machines/active', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ machineId: machineSelect.value || null }),
+            });
+          } catch (err) {
+            // ignore
+          }
+        });
+
+        refreshMachines();
+        setInterval(refreshMachines, 15000);
 
         // Logout
         document.getElementById('cloud-logout-btn').addEventListener('click', async function() {
