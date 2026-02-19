@@ -325,6 +325,89 @@ export function createFileRoutes(ctx) {
     }
   });
 
+  /**
+   * GET /api/browse?path=...&type=all|dir|file&show_hidden=true
+   * Browse the filesystem for the file picker.
+   * Returns { path, parent, entries: [{name, path, type, size?, modified?}] }
+   */
+  router.get('/browse', async (req, res) => {
+    try {
+      const os = await import('os');
+      const fs = await import('fs/promises');
+
+      let browsePath = req.query.path || '~';
+      if (browsePath === '~') {
+        browsePath = ctx.projectDir || os.default.homedir();
+      }
+
+      const resolvedPath = path.resolve(browsePath);
+      const typeFilter = req.query.type || 'all'; // 'all', 'dir', 'file'
+      const showHidden = req.query.show_hidden === 'true';
+
+      let dirEntries;
+      try {
+        dirEntries = await fs.readdir(resolvedPath, { withFileTypes: true });
+      } catch (err) {
+        if (err.code === 'ENOENT') {
+          return res.status(404).json({ error: 'Directory not found', path: resolvedPath });
+        }
+        if (err.code === 'EACCES') {
+          return res.status(403).json({ error: 'Permission denied', path: resolvedPath });
+        }
+        throw err;
+      }
+
+      const entries = [];
+      for (const entry of dirEntries) {
+        // Skip hidden files unless requested
+        if (!showHidden && entry.name.startsWith('.')) continue;
+        // Skip common uninteresting directories
+        if (entry.name === 'node_modules' || entry.name === '__pycache__' || entry.name === '.git') continue;
+
+        const isDir = entry.isDirectory();
+        const isFile = entry.isFile();
+        if (!isDir && !isFile) continue;
+        if (typeFilter === 'dir' && !isDir) continue;
+        if (typeFilter === 'file' && !isFile) continue;
+
+        const entryPath = path.join(resolvedPath, entry.name);
+        const item = {
+          name: entry.name,
+          path: entryPath,
+          type: isDir ? 'directory' : 'file',
+        };
+
+        // Add file metadata (best-effort, don't fail if stat errors)
+        if (isFile) {
+          try {
+            const stat = await fs.stat(entryPath);
+            item.size = stat.size;
+            item.modified = stat.mtime.toISOString();
+          } catch { /* ignore stat errors */ }
+        }
+
+        entries.push(item);
+      }
+
+      // Sort: directories first, then alphabetical
+      entries.sort((a, b) => {
+        if (a.type === 'directory' && b.type !== 'directory') return -1;
+        if (a.type !== 'directory' && b.type === 'directory') return 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      const parent = path.dirname(resolvedPath);
+      res.json({
+        path: resolvedPath,
+        parent: parent !== resolvedPath ? parent : null,
+        entries,
+      });
+    } catch (err) {
+      console.error('[file:browse]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   return router;
 }
 

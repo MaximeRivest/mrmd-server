@@ -243,13 +243,52 @@ export async function createServer(config) {
 
   // API routes
   app.use('/api/project', createProjectRoutes(context));
-  app.use('/api/file', createFileRoutes(context));
+  const fileRoutes = createFileRoutes(context);
+  app.use('/api/file', fileRoutes);
+  // Alias: /api/browse → /api/file/browse (file picker expects this path)
+  app.get('/api/browse', (req, res, next) => {
+    req.url = '/browse' + (req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '');
+    fileRoutes(req, res, next);
+  });
   app.use('/api/asset', createAssetRoutes(context));
   app.use('/api/system', createSystemRoutes(context));
   app.use('/api/runtime', createRuntimeRoutes(context));
   app.use('/api/notebook', createNotebookRoutes(context));
   app.use('/api/settings', createSettingsRoutes(context));
   app.use('/api/user', createUserRoutes());
+
+  // In cloud mode: proxy catalog + machine APIs to the sync relay
+  if (cloudMode && process.env.SYNC_RELAY_URL && process.env.CLOUD_USER_ID) {
+    const relayHttpUrl = process.env.SYNC_RELAY_URL.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:');
+    const cloudUserId = process.env.CLOUD_USER_ID;
+
+    app.get('/api/catalog', async (req, res) => {
+      try {
+        const qs = req.query.project ? `?project=${encodeURIComponent(req.query.project)}` : '';
+        const upstream = await fetch(
+          `${relayHttpUrl}/api/catalog/${encodeURIComponent(cloudUserId)}${qs}`,
+          { headers: { 'X-User-Id': cloudUserId }, signal: AbortSignal.timeout(10000) }
+        );
+        const body = await upstream.text();
+        res.status(upstream.status).type('json').send(body);
+      } catch (err) {
+        res.status(502).json({ error: 'catalog unavailable' });
+      }
+    });
+
+    app.get('/api/machines', async (req, res) => {
+      try {
+        const upstream = await fetch(
+          `${relayHttpUrl}/api/machines/${encodeURIComponent(cloudUserId)}`,
+          { headers: { 'X-User-Id': cloudUserId }, signal: AbortSignal.timeout(10000) }
+        );
+        const body = await upstream.text();
+        res.status(upstream.status).type('json').send(body);
+      } catch (err) {
+        res.status(502).json({ error: 'machines unavailable' });
+      }
+    });
+  }
 
   // Proxy for localhost services (bash, pty, ai, etc.)
   // Routes /proxy/:port/* to the correct host
