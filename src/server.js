@@ -448,6 +448,18 @@ export async function createServer(config) {
       }
     }
 
+    // Serve mrmd-voice dist - check multiple locations
+    const voiceDistCandidates = [
+      path.join(electronPath, 'voice'),  // Bundled in mrmd-electron (npm)
+      path.join(electronPath, '../mrmd-voice/dist'),  // Sibling (dev mode)
+    ];
+    for (const distPath of voiceDistCandidates) {
+      if (existsSync(path.join(distPath, 'mrmd-voice.iife.js'))) {
+        app.use('/mrmd-voice/dist', express.static(distPath));
+        break;
+      }
+    }
+
     // Serve node_modules for xterm, etc. - check multiple locations (npm hoisting)
     const nodeModulesCandidates = [
       path.join(electronPath, 'node_modules'),  // Direct dependency
@@ -752,6 +764,9 @@ function transformIndexHtml(html, host, port) {
   // Use pathPrefix: "/" for direct access, "" for behind-proxy (relative + <base>)
   html = html.replace(/src=["']\.\.\/mrmd-editor\//g, `src="${pathPrefix}mrmd-editor/`);
   html = html.replace(/href=["']\.\.\/mrmd-editor\//g, `href="${pathPrefix}mrmd-editor/`);
+
+  html = html.replace(/src=["']\.\.\/mrmd-voice\//g, `src="${pathPrefix}mrmd-voice/`);
+  html = html.replace(/href=["']\.\.\/mrmd-voice\//g, `href="${pathPrefix}mrmd-voice/`);
 
   html = html.replace(/src=["']\.\/node_modules\//g, `src="${pathPrefix}node_modules/`);
   html = html.replace(/href=["']\.\/node_modules\//g, `href="${pathPrefix}node_modules/`);
