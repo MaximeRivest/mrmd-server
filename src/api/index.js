@@ -9,3 +9,4 @@ export { createSystemRoutes } from './system.js';
 export { createRuntimeRoutes } from './runtime.js';
 export { createNotebookRoutes } from './notebook.js';
 export { createSettingsRoutes } from './settings.js';
+export { createVoiceRoutes } from './voice.js';

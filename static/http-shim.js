@@ -703,6 +703,40 @@
     },
 
     // ========================================================================
+    // VOICE API
+    // ========================================================================
+
+    voice: {
+      checkParakeet: (url) =>
+        POST('/api/voice/check-parakeet', { url }),
+
+      transcribeParakeet: async ({ audioBytes, mimeType, url }) => {
+        // Convert byte array to base64 for JSON transport
+        let binary = '';
+        const bytes = new Uint8Array(audioBytes);
+        const chunkSize = 8192;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+        }
+        const audioBase64 = btoa(binary);
+        return POST('/api/voice/transcribe-parakeet', { audioBase64, mimeType, url });
+      },
+
+      transcribeApi: async ({ audioBytes, mimeType, provider, model }) => {
+        let binary = '';
+        const bytes = new Uint8Array(audioBytes);
+        const chunkSize = 8192;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+        }
+        const audioBase64 = btoa(binary);
+        return POST('/api/voice/transcribe-api', { audioBase64, mimeType, provider, model });
+      },
+
+      providers: () => GET('/api/voice/providers'),
+    },
+
+    // ========================================================================
     // DATA LOSS PREVENTION
     // ========================================================================
 

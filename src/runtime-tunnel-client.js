@@ -185,6 +185,10 @@ export class RuntimeTunnelClient {
       case 'ws-error':
         this._handleWsError(msg);
         break;
+
+      case 'voice-result':
+        this._resolvePending(msg.id, msg.result, msg.error);
+        break;
     }
   }
 
@@ -211,6 +215,43 @@ export class RuntimeTunnelClient {
       activeMachineId: this._activeMachineId,
       machines: this._machines,
     };
+  }
+
+  /**
+   * Transcribe audio via the Electron provider's local Parakeet.
+   * Audio is sent as base64 through the tunnel.
+   *
+   * @param {object} opts
+   * @param {string} opts.audioBase64 - Base64 encoded audio
+   * @param {string} opts.mimeType - Audio MIME type
+   * @param {string} opts.url - Parakeet WebSocket URL (on provider's LAN)
+   * @returns {Promise<{text: string, segments: Array, duration: number}>}
+   */
+  async voiceTranscribe({ audioBase64, mimeType, url }) {
+    if (!this.isAvailable()) throw new Error('Tunnel provider not available');
+
+    const id = nextId();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this._pending.delete(id);
+        reject(new Error('Voice transcription timeout (tunnel)'));
+      }, 120000); // 2min timeout for large audio
+
+      this._pending.set(id, {
+        resolve: (result) => {
+          clearTimeout(timeout);
+          this._pending.delete(id);
+          resolve(result);
+        },
+        reject: (err) => {
+          clearTimeout(timeout);
+          this._pending.delete(id);
+          reject(typeof err === 'string' ? new Error(err) : err);
+        },
+      });
+
+      this._send({ t: 'voice-transcribe', id, audioBase64, mimeType, url });
+    });
   }
 
   /**

@@ -69,8 +69,8 @@ const DEFAULT_SETTINGS = {
 
   // Default preferences
   defaults: {
-    juiceLevel: 2,
-    reasoningLevel: 1,
+    juiceLevel: 1,
+    reasoningLevel: 0,
   },
 };
 
@@ -682,8 +682,8 @@ export function createSettingsRoutes(ctx) {
     try {
       const settings = loadSettings();
       res.json({
-        juiceLevel: settings.defaults?.juiceLevel ?? 2,
-        reasoningLevel: settings.defaults?.reasoningLevel ?? 1,
+        juiceLevel: settings.defaults?.juiceLevel ?? 1,
+        reasoningLevel: settings.defaults?.reasoningLevel ?? 0,
       });
     } catch (err) {
       console.error('[settings:getDefaults]', err);

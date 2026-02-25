@@ -26,6 +26,7 @@ import { createSystemRoutes } from './api/system.js';
 import { createRuntimeRoutes } from './api/runtime.js';
 import { createNotebookRoutes } from './api/notebook.js';
 import { createSettingsRoutes } from './api/settings.js';
+import { createVoiceRoutes } from './api/voice.js';
 import { createUserRoutes } from './api/user.js';
 import { setupWebSocket } from './websocket.js';
 
@@ -255,6 +256,7 @@ export async function createServer(config) {
   app.use('/api/runtime', createRuntimeRoutes(context));
   app.use('/api/notebook', createNotebookRoutes(context));
   app.use('/api/settings', createSettingsRoutes(context));
+  app.use('/api/voice', createVoiceRoutes(context));
   app.use('/api/user', createUserRoutes());
 
   // In cloud mode: proxy catalog + machine APIs to the sync relay
