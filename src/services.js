@@ -24,3 +24,7 @@ export {
 export {
   default as SettingsService,
 } from 'mrmd-electron/src/services/settings-service.js';
+
+export {
+  default as RuntimePreferencesService,
+} from 'mrmd-electron/src/services/runtime-preferences-service.js';

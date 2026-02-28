@@ -97,13 +97,7 @@ export async function seedFromRelay(opts) {
       // Ensure project directory exists
       mkdirSync(projectDir, { recursive: true });
 
-      // Create mrmd.md config if it doesn't exist
-      const mrmdPath = join(projectDir, 'mrmd.md');
-      if (!existsSync(mrmdPath)) {
-        const mrmdContent = `# ${projectName}\n\n\`\`\`yaml config\nname: "${projectName}"\nsession:\n  python:\n    venv: ".venv"\n\`\`\`\n`;
-        writeFileSync(mrmdPath, mrmdContent, 'utf8');
-        console.log(`[cloud-seed]   Created ${mrmdPath}`);
-      }
+      // Project metadata is app-owned; no mrmd.md bootstrap file required.
 
       // Compute dirHash for Yjs snapshot directory
       const dirHash = createHash('sha256').update(projectDir).digest('hex').slice(0, 12);
@@ -212,12 +206,7 @@ export function startProjectWatcher(opts) {
         const projectDir = join(homeDir, projectName);
         mkdirSync(projectDir, { recursive: true });
 
-        // Create mrmd.md config if missing
-        const mrmdPath = join(projectDir, 'mrmd.md');
-        if (!existsSync(mrmdPath)) {
-          const mrmdContent = `# ${projectName}\n\n\`\`\`yaml config\nname: "${projectName}"\nsession:\n  python:\n    venv: ".venv"\n\`\`\`\n`;
-          writeFileSync(mrmdPath, mrmdContent, 'utf8');
-        }
+        // Project metadata is app-owned; no mrmd.md bootstrap file required.
 
         const dirHash = createHash('sha256').update(projectDir).digest('hex').slice(0, 12);
         const snapshotDir = join(tmpdir(), `mrmd-sync-${dirHash}`);
@@ -301,13 +290,6 @@ export function startProjectWatcher(opts) {
             try {
               mkdirSync(dirname(filePath), { recursive: true });
 
-              // Create mrmd.md config if missing
-              const mrmdPath = join(projectDir, 'mrmd.md');
-              if (!existsSync(mrmdPath)) {
-                const mrmdContent = `# ${projectName}\n\n\`\`\`yaml config\nname: "${projectName}"\nsession:\n  python:\n    venv: ".venv"\n\`\`\`\n`;
-                writeFileSync(mrmdPath, mrmdContent, 'utf8');
-              }
-
               // Write empty stub — real content loads on-demand when user opens it
               writeFileSync(filePath, '', 'utf8');
               seededSet.add(key);
@@ -358,7 +340,7 @@ function _walkMd(dir, projectDir, projectName, seededSet) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         _walkMd(full, projectDir, projectName, seededSet);
-      } else if (entry.name.endsWith('.md') && entry.name !== 'mrmd.md') {
+      } else if (entry.name.endsWith('.md')) {
         const rel = full.slice(projectDir.length + 1).replace(/\.md$/, '');
         seededSet.add(`${projectName}/${rel}`);
       }

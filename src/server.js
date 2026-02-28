@@ -40,6 +40,7 @@ import {
   FileService,
   AssetService,
   SettingsService,
+  RuntimePreferencesService,
 } from './services.js';
 
 // Import sync manager for dynamic project handling
@@ -173,6 +174,7 @@ export async function createServer(config) {
   const fileService = new FileService();
   const assetService = new AssetService();
   const settingsService = new SettingsService();
+  const runtimePreferencesService = new RuntimePreferencesService({ projectService });
 
   // Import API keys from environment variables into settings
   // This lets users run: ANTHROPIC_API_KEY=sk-ant-... mrmd-server
@@ -193,6 +195,7 @@ export async function createServer(config) {
     fileService,
     assetService,
     settingsService,
+    runtimePreferencesService,
 
     // Runtime tunnel (routes MRP traffic to Electron when available)
     tunnelClient,

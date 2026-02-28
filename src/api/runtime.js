@@ -6,25 +6,60 @@
  */
 
 import { Router } from 'express';
-import { Project } from 'mrmd-project';
 import fs from 'fs';
 import path from 'path';
 
 /**
- * Detect project from a file path.
+ * Resolve project root from a file path without requiring mrmd.md.
  */
-function detectProject(filePath) {
-  const root = Project.findRoot(filePath, (dir) => fs.existsSync(path.join(dir, 'mrmd.md')));
-  if (!root) return null;
-
-  try {
-    const mrmdPath = path.join(root, 'mrmd.md');
-    const content = fs.readFileSync(mrmdPath, 'utf8');
-    const config = Project.parseConfig(content);
-    return { root, config };
-  } catch {
-    return { root, config: {} };
+function findGitRoot(startDir) {
+  let current = path.resolve(startDir || '/');
+  while (true) {
+    if (fs.existsSync(path.join(current, '.git'))) return current;
+    const parent = path.dirname(current);
+    if (!parent || parent === current) break;
+    current = parent;
   }
+  return null;
+}
+
+function hasDocsInDir(dir) {
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    return entries.some((entry) => entry.isFile() && /\.(md|qmd)$/i.test(entry.name));
+  } catch {
+    return false;
+  }
+}
+
+function resolveProjectRoot(filePath, fallbackRoot = null) {
+  const abs = path.resolve(String(filePath || fallbackRoot || process.cwd()));
+  let startDir = abs;
+  try {
+    const stat = fs.statSync(abs);
+    if (stat.isFile()) startDir = path.dirname(abs);
+  } catch {
+    if (path.extname(abs)) startDir = path.dirname(abs);
+  }
+
+  const gitRoot = findGitRoot(startDir);
+  if (gitRoot) return gitRoot;
+
+  const homeDir = path.resolve(process.env.HOME || '/');
+  let current = startDir;
+  let candidate = startDir;
+  for (let i = 0; i < 4; i++) {
+    const parent = path.dirname(current);
+    if (!parent || parent === current || parent === '/' || parent === homeDir) break;
+    if (hasDocsInDir(parent)) {
+      candidate = parent;
+      current = parent;
+      continue;
+    }
+    break;
+  }
+
+  return candidate;
 }
 
 /**
@@ -33,7 +68,99 @@ function detectProject(filePath) {
  */
 export function createRuntimeRoutes(ctx) {
   const router = Router();
-  const { runtimeService } = ctx;
+  const { runtimeService, runtimePreferencesService } = ctx;
+
+  function normalizeRuntimeLanguage(language) {
+    const l = String(language || '').toLowerCase();
+    if (l === 'py' || l === 'python3') return 'python';
+    if (l === 'sh' || l === 'shell' || l === 'zsh') return 'bash';
+    if (l === 'rlang') return 'r';
+    if (l === 'jl') return 'julia';
+    if (l === 'term' || l === 'terminal') return 'pty';
+    return l;
+  }
+
+  async function ensureEffectiveRuntime(documentPath, language, options = {}) {
+    const normalized = normalizeRuntimeLanguage(language);
+    const supported = new Set(runtimeService.supportedLanguages());
+    if (!supported.has(normalized)) {
+      return {
+        language: normalized,
+        alive: false,
+        available: false,
+        error: `Unsupported runtime language: ${language}`,
+      };
+    }
+
+    const resolvedProjectRoot = resolveProjectRoot(documentPath, options.projectRoot || ctx.projectDir || process.cwd());
+
+    let effective = null;
+    let startConfig = null;
+    if (runtimePreferencesService?.getEffectiveForDocument) {
+      effective = await runtimePreferencesService.getEffectiveForDocument({
+        documentPath,
+        language: normalized,
+        projectRoot: resolvedProjectRoot,
+        deviceKind: options.deviceKind || 'desktop',
+      });
+      startConfig = runtimePreferencesService.toRuntimeStartConfig(effective);
+    } else {
+      const projectName = path.basename(resolvedProjectRoot) || 'project';
+      startConfig = {
+        name: `rt:notebook:${projectName}:${normalized}`,
+        language: normalized,
+        cwd: resolvedProjectRoot,
+      };
+      if (normalized === 'python') {
+        startConfig.venv = path.join(resolvedProjectRoot, '.venv');
+      }
+    }
+
+    // If tunnel provider is available, prefer it so execution runs on user's machine.
+    if (ctx.tunnelClient?.isAvailable()) {
+      try {
+        const tunnelResult = await ctx.tunnelClient.startRuntime({
+          language: normalized,
+          documentPath,
+          projectRoot: resolvedProjectRoot,
+        });
+        const langResult = tunnelResult?.[normalized];
+        if (langResult) {
+          return {
+            ...langResult,
+            id: langResult.name,
+            alive: !!langResult.alive,
+            available: true,
+            effective,
+          };
+        }
+      } catch (err) {
+        console.warn(`[runtime:ensure:${normalized}] Tunnel failed, falling back to local:`, err.message);
+      }
+    }
+
+    try {
+      const runtime = await runtimeService.start(startConfig);
+      return {
+        ...runtime,
+        id: runtime.name,
+        alive: true,
+        available: true,
+        autoStart: true,
+        effective,
+      };
+    } catch (e) {
+      return {
+        ...startConfig,
+        id: startConfig.name,
+        alive: false,
+        available: true,
+        autoStart: true,
+        error: e.message,
+        effective,
+      };
+    }
+  }
 
   /**
    * GET /api/runtime
@@ -152,61 +279,25 @@ export function createRuntimeRoutes(ctx) {
   /**
    * POST /api/runtime/for-document
    * Get or create ALL runtimes needed for a document.
-   * Body: { documentPath, projectConfig?, frontmatter?, projectRoot? }
-   * Returns: { python: {...}, bash: {...}, r: {...}, julia: {...}, pty: {...} }
+   * Body: { documentPath, projectRoot?, deviceKind? }
    */
   router.post('/for-document', async (req, res) => {
     try {
-      let { documentPath, projectConfig, frontmatter, projectRoot } = req.body;
-
+      const { documentPath, projectRoot, deviceKind } = req.body;
       if (!documentPath) {
         return res.status(400).json({ error: 'documentPath required' });
       }
 
-      // Auto-detect project
-      if (!projectConfig || !projectRoot) {
-        const detected = detectProject(documentPath);
-        if (detected) {
-          projectRoot = projectRoot || detected.root;
-          projectConfig = projectConfig || detected.config;
-        } else {
-          projectRoot = projectRoot || (ctx.projectDir || process.cwd());
-          projectConfig = projectConfig || {};
-        }
+      const out = {};
+      const languages = runtimeService.supportedLanguages();
+      for (const language of languages) {
+        out[language] = await ensureEffectiveRuntime(documentPath, language, {
+          projectRoot,
+          deviceKind,
+        });
       }
 
-      // Auto-parse frontmatter
-      if (!frontmatter) {
-        try {
-          const content = fs.readFileSync(documentPath, 'utf8');
-          frontmatter = Project.parseFrontmatter(content);
-        } catch {
-          frontmatter = null;
-        }
-      }
-
-      // If the Electron desktop runtime tunnel is available, route to it
-      // so code runs on the user's laptop instead of the server.
-      if (ctx.tunnelClient?.isAvailable()) {
-        try {
-          const tunnelResult = await ctx.tunnelClient.startRuntime({
-            documentPath,
-            projectRoot,
-            projectConfig,
-            frontmatter,
-          });
-          console.log('[runtime:forDocument] Using tunnel — runtimes from Electron');
-          return res.json(tunnelResult);
-        } catch (err) {
-          console.warn('[runtime:forDocument] Tunnel failed, falling back to local:', err.message);
-          // Fall through to local runtimes
-        }
-      }
-
-      const result = await runtimeService.getForDocument(
-        documentPath, projectConfig, frontmatter, projectRoot
-      );
-      res.json(result);
+      res.json(out);
     } catch (err) {
       console.error('[runtime:forDocument]', err);
       res.json(null);
@@ -216,60 +307,21 @@ export function createRuntimeRoutes(ctx) {
   /**
    * POST /api/runtime/for-document/:language
    * Get or create a runtime for a specific language.
-   * Body: { documentPath, projectConfig?, frontmatter?, projectRoot? }
+   * Body: { documentPath, projectRoot?, deviceKind? }
    */
   router.post('/for-document/:language', async (req, res) => {
     try {
-      let { documentPath, projectConfig, frontmatter, projectRoot } = req.body;
+      const { documentPath, projectRoot, deviceKind } = req.body;
       const { language } = req.params;
 
       if (!documentPath) {
         return res.status(400).json({ error: 'documentPath required' });
       }
 
-      if (!projectConfig || !projectRoot) {
-        const detected = detectProject(documentPath);
-        if (detected) {
-          projectRoot = projectRoot || detected.root;
-          projectConfig = projectConfig || detected.config;
-        } else {
-          projectRoot = projectRoot || (ctx.projectDir || process.cwd());
-          projectConfig = projectConfig || {};
-        }
-      }
-
-      if (!frontmatter) {
-        try {
-          const content = fs.readFileSync(documentPath, 'utf8');
-          frontmatter = Project.parseFrontmatter(content);
-        } catch {
-          frontmatter = null;
-        }
-      }
-
-      // Try tunnel first
-      if (ctx.tunnelClient?.isAvailable()) {
-        try {
-          const tunnelResult = await ctx.tunnelClient.startRuntime({
-            language,
-            documentPath,
-            projectRoot,
-            projectConfig,
-            frontmatter,
-          });
-          const langResult = tunnelResult?.[language];
-          if (langResult) {
-            console.log(`[runtime:forDocument:${language}] Using tunnel — runtime from Electron`);
-            return res.json(langResult);
-          }
-        } catch (err) {
-          console.warn(`[runtime:forDocument:${language}] Tunnel failed, falling back:`, err.message);
-        }
-      }
-
-      const result = await runtimeService.getForDocumentLanguage(
-        language, documentPath, projectConfig, frontmatter, projectRoot
-      );
+      const result = await ensureEffectiveRuntime(documentPath, language, {
+        projectRoot,
+        deviceKind,
+      });
       res.json(result);
     } catch (err) {
       console.error('[runtime:forDocumentLanguage]', err);
