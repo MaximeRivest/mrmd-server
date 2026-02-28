@@ -135,14 +135,6 @@
     return fileName;
   }
 
-  function makeRuntimeIdFromVenv(venvPath = '', forceNew = false) {
-    const venvName = basenameFromPath(venvPath).replace(/^\.+/, '') || 'venv';
-    const projectName = basenameFromPath(dirnameFromPath(venvPath)).replace(/^\.+/, '') || 'project';
-    let name = `${projectName}:${venvName}`.replace(/[^a-zA-Z0-9-:]/g, '-');
-    if (forceNew) name += '-' + Date.now().toString(36).slice(-4);
-    return name;
-  }
-
   // ==========================================================================
   // WebSocket for Events
   // ==========================================================================
@@ -380,51 +372,6 @@
     installMrmdPython: (venvPath) =>
       POST('/api/system/install-mrmd-python', { venvPath }),
 
-    startPython: async (venvPath, forceNew = false) => {
-      try {
-        const runtimeId = makeRuntimeIdFromVenv(venvPath, forceNew);
-        const cwd = dirnameFromPath(venvPath);
-        const result = await POST('/api/runtime', {
-          config: {
-            name: runtimeId,
-            language: 'python',
-            cwd,
-            venv: venvPath,
-          },
-        });
-
-        return {
-          success: true,
-          port: result.port,
-          runtimeId,
-          venv: result.venv || venvPath,
-          url: result.url,
-        };
-      } catch (err) {
-        return {
-          success: false,
-          error: err.message,
-        };
-      }
-    },
-
-    attachRuntime: async (runtimeId) => {
-      try {
-        const result = await POST(`/api/runtime/${encodeURIComponent(runtimeId)}/attach`, {});
-        return {
-          success: true,
-          port: result.port,
-          url: result.url,
-          venv: result.venv,
-        };
-      } catch (err) {
-        return {
-          success: false,
-          error: err.message,
-        };
-      }
-    },
-
     openFile: async (filePath) => {
       try {
         // Ensure project is detected and sync server is available.
@@ -459,24 +406,6 @@
           success: false,
           error: err.message,
         };
-      }
-    },
-
-    listRuntimes: async () => {
-      try {
-        const runtimes = await GET('/api/runtime');
-        return { runtimes };
-      } catch (err) {
-        return { runtimes: [], error: err.message };
-      }
-    },
-
-    killRuntime: async (runtimeId) => {
-      try {
-        await DELETE(`/api/runtime/${encodeURIComponent(runtimeId)}`);
-        return { success: true };
-      } catch (err) {
-        return { success: false, error: err.message };
       }
     },
 
@@ -522,19 +451,8 @@
 
       restart: (sessionName) => POST(`/api/runtime/${encodeURIComponent(sessionName)}/restart`, {}),
 
-      forDocument: async (documentPath) => {
-        const result = await POST('/api/runtime/for-document', { documentPath });
-
-        // Backwards compatibility: legacy renderer expects a single Python session object.
-        // Unified runtime API returns { python, bash, r, julia, pty }.
-        if (result && typeof result === 'object' && !Array.isArray(result)) {
-          if (result.python && typeof result.python === 'object') {
-            return result.python;
-          }
-        }
-
-        return result;
-      },
+      forDocument: (documentPath) =>
+        POST('/api/runtime/for-document', { documentPath }),
 
       forDocumentLanguage: (documentPath, language) =>
         POST(`/api/runtime/for-document/${encodeURIComponent(language)}`, { documentPath }),

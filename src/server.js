@@ -437,6 +437,10 @@ export async function createServer(config) {
     // Serve mrmd-electron assets (fonts, icons)
     app.use('/assets', express.static(path.join(electronPath, 'assets')));
 
+    // Serve selected renderer source modules used by transformed index.html
+    // (e.g., runtime-controller extraction).
+    app.use('/src', express.static(path.join(electronPath, 'src')));
+
     // Serve mrmd-editor dist - check multiple locations
     const editorDistCandidates = [
       path.join(electronPath, 'editor'),  // Bundled in mrmd-electron (npm)
@@ -775,6 +779,9 @@ function transformIndexHtml(html, host, port) {
 
   html = html.replace(/src=["']\.\/assets\//g, `src="${pathPrefix}assets/`);
   html = html.replace(/href=["']\.\/assets\//g, `href="${pathPrefix}assets/`);
+
+  html = html.replace(/src=["']\.\/src\//g, `src="${pathPrefix}src/`);
+  html = html.replace(/href=["']\.\/src\//g, `href="${pathPrefix}src/`);
 
   // 5. Patch asset resolver: replace file:// URLs with HTTP URLs
   //    In Electron, assets resolve to file:// which works.

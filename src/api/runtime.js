@@ -42,6 +42,15 @@ export function createRuntimeRoutes(ctx) {
    */
   router.get('/', async (req, res) => {
     try {
+      if (ctx.tunnelClient?.isAvailable()) {
+        try {
+          const tunnelRuntimes = await ctx.tunnelClient.listRuntimes(req.query.language);
+          console.log('[runtime:list] Using tunnel — listing Electron runtimes');
+          return res.json(tunnelRuntimes);
+        } catch (err) {
+          console.warn('[runtime:list] Tunnel list failed, falling back to local:', err.message);
+        }
+      }
       res.json(runtimeService.list(req.query.language));
     } catch (err) {
       console.error('[runtime:list]', err);
@@ -60,6 +69,15 @@ export function createRuntimeRoutes(ctx) {
       if (!config?.name || !config?.language) {
         return res.status(400).json({ error: 'config.name and config.language required' });
       }
+      if (ctx.tunnelClient?.isAvailable()) {
+        try {
+          const tunnelResult = await ctx.tunnelClient.startRuntime(config);
+          console.log(`[runtime:start] Using tunnel — starting Electron runtime "${config.name}"`);
+          return res.json(tunnelResult?.[config.language] || tunnelResult);
+        } catch (err) {
+          console.warn(`[runtime:start] Tunnel start failed for "${config.name}", falling back:`, err.message);
+        }
+      }
       const result = await runtimeService.start(config);
       res.json(result);
     } catch (err) {
@@ -74,6 +92,15 @@ export function createRuntimeRoutes(ctx) {
    */
   router.delete('/:name', async (req, res) => {
     try {
+      if (ctx.tunnelClient?.isAvailable()) {
+        try {
+          const result = await ctx.tunnelClient.stopRuntime(req.params.name);
+          console.log(`[runtime:stop] Using tunnel — stopping Electron runtime "${req.params.name}"`);
+          return res.json(result);
+        } catch (err) {
+          console.warn(`[runtime:stop] Tunnel stop failed for "${req.params.name}", falling back:`, err.message);
+        }
+      }
       await runtimeService.stop(req.params.name);
       res.json({ success: true });
     } catch (err) {
@@ -88,6 +115,15 @@ export function createRuntimeRoutes(ctx) {
    */
   router.post('/:name/restart', async (req, res) => {
     try {
+      if (ctx.tunnelClient?.isAvailable()) {
+        try {
+          const result = await ctx.tunnelClient.restartRuntime(req.params.name);
+          console.log(`[runtime:restart] Using tunnel — restarting Electron runtime "${req.params.name}"`);
+          return res.json(result);
+        } catch (err) {
+          console.warn(`[runtime:restart] Tunnel restart failed for "${req.params.name}", falling back:`, err.message);
+        }
+      }
       const result = await runtimeService.restart(req.params.name);
       res.json(result);
     } catch (err) {

@@ -146,8 +146,24 @@ export class RuntimeTunnelClient {
         console.log('[tunnel-client] Provider info:', this._provider);
         break;
 
+      case 'runtimes-list':
+        this._handleRuntimesList(msg);
+        break;
+
       case 'runtime-started':
         this._handleRuntimeStarted(msg);
+        break;
+
+      case 'runtime-update':
+        this._handleRuntimeUpdate(msg);
+        break;
+
+      case 'runtime-update-error':
+        this._handleRuntimeUpdateError(msg);
+        break;
+
+      case 'runtime-stopped':
+        this._resolvePending(msg.id, { success: msg.success });
         break;
 
       case 'runtime-error':
@@ -255,6 +271,99 @@ export class RuntimeTunnelClient {
   }
 
   /**
+   * Ask the Electron to list its runtimes.
+   */
+  async listRuntimes(language) {
+    if (!this.isAvailable()) throw new Error('Tunnel provider not available');
+
+    const id = nextId();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this._pending.delete(id);
+        reject(new Error('Runtime list timeout'));
+      }, 10000);
+
+      this._pending.set(id, {
+        resolve: (result) => {
+          clearTimeout(timeout);
+          this._pending.delete(id);
+          resolve(result);
+        },
+        reject: (err) => {
+          clearTimeout(timeout);
+          this._pending.delete(id);
+          reject(typeof err === 'string' ? new Error(err) : err);
+        },
+      });
+
+      this._send({ t: 'list-runtimes', id, language });
+    });
+  }
+
+  /**
+   * Ask the Electron to stop a runtime.
+   */
+  async stopRuntime(name) {
+    if (!this.isAvailable()) throw new Error('Tunnel provider not available');
+
+    const id = nextId();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this._pending.delete(id);
+        reject(new Error('Runtime stop timeout'));
+      }, 10000);
+
+      this._pending.set(id, {
+        resolve: (result) => {
+          clearTimeout(timeout);
+          this._pending.delete(id);
+          resolve(result);
+        },
+        reject: (err) => {
+          clearTimeout(timeout);
+          this._pending.delete(id);
+          reject(typeof err === 'string' ? new Error(err) : err);
+        },
+      });
+
+      this._send({ t: 'stop-runtime', id, name });
+    });
+  }
+
+  /**
+   * Ask the Electron to restart a runtime.
+   */
+  async restartRuntime(name) {
+    if (!this.isAvailable()) throw new Error('Tunnel provider not available');
+
+    const id = nextId();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this._pending.delete(id);
+        reject(new Error('Runtime restart timeout'));
+      }, 30000);
+
+      this._pending.set(id, {
+        resolve: (result) => {
+          clearTimeout(timeout);
+          this._pending.delete(id);
+          // restart returns a single runtime info map {lang: info}
+          // just return the first one
+          const keys = Object.keys(result || {});
+          resolve(keys.length > 0 ? result[keys[0]] : null);
+        },
+        reject: (err) => {
+          clearTimeout(timeout);
+          this._pending.delete(id);
+          reject(typeof err === 'string' ? new Error(err) : err);
+        },
+      });
+
+      this._send({ t: 'restart-runtime', id, name });
+    });
+  }
+
+  /**
    * Ask the Electron to start/find runtimes for a document.
    * Returns the same format as RuntimeService.getForDocument().
    */
@@ -288,11 +397,14 @@ export class RuntimeTunnelClient {
       this._send({
         t: 'start-runtime',
         id,
+        name: config.name || null,
         language: config.language || null,
-        documentPath: config.documentPath,
-        projectRoot: config.projectRoot,
-        projectConfig: config.projectConfig,
-        frontmatter: config.frontmatter,
+        cwd: config.cwd || null,
+        venv: config.venv || null,
+        documentPath: config.documentPath || null,
+        projectRoot: config.projectRoot || null,
+        projectConfig: config.projectConfig || null,
+        frontmatter: config.frontmatter || null,
       });
     });
   }
@@ -427,31 +539,78 @@ export class RuntimeTunnelClient {
 
   // ── Message handlers ──────────────────────────────────────────────────
 
-  _handleRuntimeStarted(msg) {
+  _handleRuntimesList(msg) {
     const handler = this._pending.get(msg.id);
     if (!handler) return;
 
     // Register all returned ports as tunnel ports
-    const runtimes = msg.runtimes || {};
-    for (const [lang, info] of Object.entries(runtimes)) {
+    const runtimes = msg.runtimes || [];
+    for (const info of runtimes) {
       if (info?.port) {
         this._tunnelPorts.add(info.port);
       }
     }
 
+    handler.resolve(runtimes);
+  }
+
+  _handleRuntimeStarted(msg) {
+    const runtimes = msg.runtimes || {};
+    this._registerRuntimePorts(runtimes);
+
+    const handler = this._pending.get(msg.id);
+    if (!handler) return;
+
     // Learn cloud->local path mapping from this runtime response.
     // Example: cloud /home/ubuntu/tidyjs  -> local /home/maxime/Projects/tidyjs
     const cloudRoot = handler.requestContext?.projectRoot || null;
-    if (cloudRoot) {
-      for (const info of Object.values(runtimes)) {
-        if (info?.cwd && typeof info.cwd === 'string' && info.cwd !== cloudRoot) {
-          this._cloudToLocalRoots.set(cloudRoot, info.cwd);
-          break;
-        }
-      }
-    }
+    this._learnCloudToLocalRoot(cloudRoot, runtimes);
 
     handler.resolve(runtimes);
+  }
+
+  _handleRuntimeUpdate(msg) {
+    const runtimes = msg.runtimes || {};
+    this._registerRuntimePorts(runtimes);
+
+    // Background updates (e.g. delayed Julia startup) may arrive after the
+    // original RPC request has already resolved.
+    const pending = this._pending.get(msg.requestId);
+    const cloudRoot = pending?.requestContext?.projectRoot || msg.projectRoot || null;
+    this._learnCloudToLocalRoot(cloudRoot, runtimes);
+
+    if (!pending) {
+      console.log(`[tunnel-client] Runtime update received (${msg.language || 'unknown'})`);
+    }
+  }
+
+  _handleRuntimeUpdateError(msg) {
+    // Background startup errors are informational unless the original request
+    // is still pending.
+    const pending = this._pending.get(msg.requestId);
+    if (pending) {
+      pending.reject?.(msg.error || `Runtime update failed (${msg.language || 'unknown'})`);
+      return;
+    }
+    console.warn(`[tunnel-client] Runtime update error (${msg.language || 'unknown'}): ${msg.error || 'unknown error'}`);
+  }
+
+  _registerRuntimePorts(runtimes) {
+    for (const info of Object.values(runtimes || {})) {
+      if (info?.port) {
+        this._tunnelPorts.add(info.port);
+      }
+    }
+  }
+
+  _learnCloudToLocalRoot(cloudRoot, runtimes) {
+    if (!cloudRoot) return;
+    for (const info of Object.values(runtimes || {})) {
+      if (info?.cwd && typeof info.cwd === 'string' && info.cwd !== cloudRoot) {
+        this._cloudToLocalRoots.set(cloudRoot, info.cwd);
+        break;
+      }
+    }
   }
 
   _handleHttpRes(msg) {
