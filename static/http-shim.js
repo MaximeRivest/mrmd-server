@@ -423,6 +423,15 @@
       nav: (projectRoot) =>
         GET(`/api/project/nav?root=${encodeURIComponent(projectRoot)}`),
 
+      rawTree: (root, showSystem = false, maxDepth) => {
+        const params = new URLSearchParams();
+        if (root) params.set('root', root);
+        if (showSystem) params.set('showSystem', 'true');
+        const depthNum = Number(maxDepth);
+        if (Number.isFinite(depthNum)) params.set('maxDepth', String(depthNum));
+        return GET(`/api/project/raw-tree?${params.toString()}`);
+      },
+
       invalidate: (projectRoot) =>
         POST('/api/project/invalidate', { projectRoot }),
 
@@ -560,6 +569,42 @@
         if (options.maxDepth) params.set('maxDepth', options.maxDepth);
         if (options.includeHidden) params.set('includeHidden', 'true');
         return GET(`/api/file/scan?${params.toString()}`);
+      },
+
+      browse: async (dirPath, showHidden = false) => {
+        const params = new URLSearchParams();
+        if (dirPath) params.set('path', dirPath);
+        params.set('type', 'all');
+        if (showHidden) params.set('show_hidden', 'true');
+
+        try {
+          const data = await GET(`/api/file/browse?${params.toString()}`);
+          const entries = Array.isArray(data?.entries) ? data.entries : [];
+          return {
+            success: true,
+            path: data?.path || dirPath,
+            parent: data?.parent || null,
+            entries: entries.map((entry) => {
+              const isFolder = entry?.isFolder ?? entry?.isDirectory ?? entry?.type === 'directory';
+              return {
+                name: entry?.name || '',
+                path: entry?.path || '',
+                isFolder,
+                isHidden: typeof entry?.isHidden === 'boolean' ? entry.isHidden : String(entry?.name || '').startsWith('_'),
+                size: entry?.size,
+                modified: entry?.modified,
+              };
+            }),
+          };
+        } catch (err) {
+          return {
+            success: false,
+            error: err?.message || String(err),
+            path: dirPath,
+            parent: null,
+            entries: [],
+          };
+        }
       },
 
       create: (filePath, content = '') =>

@@ -238,6 +238,34 @@ export function createProjectRoutes(ctx) {
   });
 
   /**
+   * GET /api/project/raw-tree?root=...&showSystem=true&maxDepth=...
+   * Get raw file tree (all files, actual filenames) for file browser view.
+   * Mirrors: electronAPI.project.rawTree(root, showSystem, maxDepth)
+   */
+  router.get('/raw-tree', async (req, res) => {
+    try {
+      const root = req.query.root || ctx.projectDir;
+      const showSystem = req.query.showSystem === 'true';
+      const maxDepth = Number.isFinite(Number(req.query.maxDepth)) ? Number(req.query.maxDepth) : undefined;
+
+      if (!root) {
+        return res.status(400).json({ error: 'root query parameter required' });
+      }
+
+      // Use shared ProjectService implementation so Electron + server stay aligned.
+      const tree = await projectService.getRawTree(root, {
+        showSystem,
+        ...(Number.isInteger(maxDepth) && maxDepth >= 0 ? { maxDepth } : {}),
+      });
+
+      res.json(tree);
+    } catch (err) {
+      console.error('[project:raw-tree]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
    * POST /api/project/invalidate
    * Invalidate cached project info
    * Mirrors: electronAPI.project.invalidate(projectRoot)
@@ -245,9 +273,11 @@ export function createProjectRoutes(ctx) {
   router.post('/invalidate', async (req, res) => {
     try {
       const { projectRoot } = req.body;
-      // In this implementation we don't cache, so this is a no-op
-      // but we emit an event so the UI can refresh
-      ctx.eventBus.projectChanged(projectRoot || ctx.projectDir);
+      const root = projectRoot || ctx.projectDir;
+      if (root) {
+        projectService.invalidate(root);
+      }
+      ctx.eventBus.projectChanged(root);
       res.json({ success: true });
     } catch (err) {
       console.error('[project:invalidate]', err);
@@ -278,7 +308,9 @@ export function createProjectRoutes(ctx) {
       });
 
       watcher.on('all', (event, filePath) => {
-        if (isDocFile(filePath)) {
+        const isDirectoryEvent = !path.extname(filePath || '');
+        if (isDocFile(filePath) || isDirectoryEvent) {
+          projectService.invalidate(watchPath);
           ctx.eventBus.projectChanged(watchPath);
         }
       });
@@ -421,3 +453,4 @@ async function hasIndexFile(dirPath) {
 function cleanName(name) {
   return name.replace(/^\d+[-_.\s]*/, '');
 }
+

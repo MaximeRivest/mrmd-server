@@ -408,6 +408,60 @@ export function createFileRoutes(ctx) {
     }
   });
 
+  /**
+   * POST /api/file/write-bytes
+   * Write raw bytes to a file (for drag-drop uploads from browser).
+   * Body: { filePath, bytes: number[] }
+   */
+  router.post('/write-bytes', async (req, res) => {
+    try {
+      const { filePath, bytes } = req.body;
+      if (!filePath || !bytes) {
+        return res.status(400).json({ error: 'filePath and bytes required' });
+      }
+      const fullPath = resolvePath(ctx.projectDir, filePath);
+      await fsPromises.mkdir(path.dirname(fullPath), { recursive: true });
+      await fsPromises.writeFile(fullPath, Buffer.from(bytes));
+
+      ctx.eventBus.projectChanged(ctx.projectDir);
+      res.json({ success: true, path: fullPath });
+    } catch (err) {
+      console.error('[file:write-bytes]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/file/copy
+   * Copy a file or directory.
+   * Body: { fromPath, toPath }
+   */
+  router.post('/copy', async (req, res) => {
+    try {
+      const { fromPath, toPath } = req.body;
+      if (!fromPath || !toPath) {
+        return res.status(400).json({ error: 'fromPath and toPath required' });
+      }
+
+      const fullFrom = resolvePath(ctx.projectDir, fromPath);
+      const fullTo = resolvePath(ctx.projectDir, toPath);
+      const stat = await fsPromises.stat(fullFrom);
+
+      if (stat.isDirectory()) {
+        await fsPromises.cp(fullFrom, fullTo, { recursive: true });
+      } else {
+        await fsPromises.mkdir(path.dirname(fullTo), { recursive: true });
+        await fsPromises.copyFile(fullFrom, fullTo);
+      }
+
+      ctx.eventBus.projectChanged(ctx.projectDir);
+      res.json({ success: true, path: fullTo });
+    } catch (err) {
+      console.error('[file:copy]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   return router;
 }
 
