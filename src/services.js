@@ -28,3 +28,11 @@ export {
 export {
   default as RuntimePreferencesService,
 } from 'mrmd-electron/src/services/runtime-preferences-service.js';
+
+export {
+  default as LanguageToolService,
+} from 'mrmd-electron/src/services/languagetool-service.js';
+
+export {
+  default as LanguageToolPreferencesService,
+} from 'mrmd-electron/src/services/languagetool-preferences-service.js';

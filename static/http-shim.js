@@ -484,6 +484,37 @@
     },
 
     // ========================================================================
+    // LANGUAGETOOL SERVICE
+    // ========================================================================
+
+    languagetool: {
+      status: () => GET('/api/languagetool/status'),
+
+      languages: () => GET('/api/languagetool/languages'),
+
+      check: (payload) => POST('/api/languagetool/check', payload || {}),
+
+      getPrefs: (documentPath, projectRoot) =>
+        GET(`/api/languagetool/prefs?documentPath=${encodeURIComponent(documentPath || '')}${projectRoot ? `&projectRoot=${encodeURIComponent(projectRoot)}` : ''}`),
+
+      setPrefs: (documentPath, patch, projectRoot) =>
+        POST('/api/languagetool/prefs', { documentPath, patch, projectRoot }),
+
+      clearPrefs: (documentPath, projectRoot) =>
+        POST('/api/languagetool/prefs/clear', { documentPath, projectRoot }),
+
+      getDictionary: () => GET('/api/languagetool/dictionary'),
+
+      addToDictionary: (word) => POST('/api/languagetool/dictionary/add', { word }),
+
+      removeFromDictionary: (word) => POST('/api/languagetool/dictionary/remove', { word }),
+
+      getDefaults: () => GET('/api/languagetool/defaults'),
+
+      setDefaults: (patch) => POST('/api/languagetool/defaults', { patch }),
+    },
+
+    // ========================================================================
     // SETTINGS SERVICE
     // ========================================================================
 

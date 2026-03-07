@@ -26,6 +26,7 @@ import { createSystemRoutes } from './api/system.js';
 import { createRuntimeRoutes } from './api/runtime.js';
 import { createNotebookRoutes } from './api/notebook.js';
 import { createSettingsRoutes } from './api/settings.js';
+import { createLanguageToolRoutes } from './api/languagetool.js';
 import { createVoiceRoutes } from './api/voice.js';
 import { createUserRoutes } from './api/user.js';
 import { setupWebSocket } from './websocket.js';
@@ -41,6 +42,8 @@ import {
   AssetService,
   SettingsService,
   RuntimePreferencesService,
+  LanguageToolService,
+  LanguageToolPreferencesService,
 } from './services.js';
 
 // Import sync manager for dynamic project handling
@@ -175,6 +178,12 @@ export async function createServer(config) {
   const assetService = new AssetService();
   const settingsService = new SettingsService();
   const runtimePreferencesService = new RuntimePreferencesService({ projectService });
+  const languageToolService = new LanguageToolService({
+    distributionDirs: [
+      path.resolve(__dirname, '..', 'vendor', 'languagetool'),
+    ],
+  });
+  const languageToolPreferencesService = new LanguageToolPreferencesService({ projectService });
 
   // Import API keys from environment variables into settings
   // This lets users run: ANTHROPIC_API_KEY=sk-ant-... mrmd-server
@@ -196,6 +205,8 @@ export async function createServer(config) {
     assetService,
     settingsService,
     runtimePreferencesService,
+    languageToolService,
+    languageToolPreferencesService,
 
     // Runtime tunnel (routes MRP traffic to Electron when available)
     tunnelClient,
@@ -259,6 +270,7 @@ export async function createServer(config) {
   app.use('/api/runtime', createRuntimeRoutes(context));
   app.use('/api/notebook', createNotebookRoutes(context));
   app.use('/api/settings', createSettingsRoutes(context));
+  app.use('/api/languagetool', createLanguageToolRoutes(context));
   app.use('/api/voice', createVoiceRoutes(context));
   app.use('/api/user', createUserRoutes());
 
@@ -666,6 +678,14 @@ export async function createServer(config) {
 
       // Stop AI server
       stopAiServer();
+
+      try {
+        if (typeof languageToolService.stop === 'function') {
+          await languageToolService.stop();
+        }
+      } catch (e) {
+        console.warn('[server] Error stopping LanguageTool:', e.message);
+      }
 
       // Stop all runtime sessions
       try {
