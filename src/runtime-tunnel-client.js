@@ -8,6 +8,7 @@
  * Provides:
  *   - isAvailable()         — is the Electron provider connected?
  *   - startRuntime(config)  — ask Electron to start runtimes for a document
+ *   - getSharedSyncInfo(config) — ask Electron for local sync port/doc info
  *   - httpProxy(port, req, res)    — tunnel HTTP request to Electron
  *   - wsProxy(port, path, clientWs) — tunnel WebSocket to Electron
  *   - isTunnelPort(port)    — is this port served by the tunnel?
@@ -152,6 +153,10 @@ export class RuntimeTunnelClient {
 
       case 'runtime-started':
         this._handleRuntimeStarted(msg);
+        break;
+
+      case 'shared-sync-info':
+        this._resolvePending(msg.id, msg.sync);
         break;
 
       case 'runtime-update':
@@ -403,8 +408,42 @@ export class RuntimeTunnelClient {
         venv: config.venv || null,
         documentPath: config.documentPath || null,
         projectRoot: config.projectRoot || null,
+        sharedProject: config.sharedProject || null,
+        sharedDocPath: config.sharedDocPath || null,
         projectConfig: config.projectConfig || null,
         frontmatter: config.frontmatter || null,
+      });
+    });
+  }
+
+  async getSharedSyncInfo(config) {
+    if (!this.isAvailable()) throw new Error('Tunnel provider not available');
+
+    const id = nextId();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this._pending.delete(id);
+        reject(new Error('Shared sync info timeout'));
+      }, 15000);
+
+      this._pending.set(id, {
+        resolve: (result) => {
+          clearTimeout(timeout);
+          this._pending.delete(id);
+          resolve(result);
+        },
+        reject: (err) => {
+          clearTimeout(timeout);
+          this._pending.delete(id);
+          reject(typeof err === 'string' ? new Error(err) : err);
+        },
+      });
+
+      this._send({
+        t: 'shared-sync-info',
+        id,
+        project: config.sharedProject || null,
+        docPath: config.sharedDocPath || null,
       });
     });
   }
