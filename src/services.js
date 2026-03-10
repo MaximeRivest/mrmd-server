@@ -1,38 +1,38 @@
 /**
- * Re-export services from mrmd-electron
+ * Re-export services (vendored from mrmd-electron)
  *
  * These services are pure Node.js (no Electron dependencies)
- * and can be used directly by mrmd-server.
+ * and are bundled directly so mrmd-server works standalone.
  */
 
 export {
   default as ProjectService,
-} from 'mrmd-electron/src/services/project-service.js';
+} from './vendor/services/project-service.js';
 
 export {
   default as RuntimeService,
-} from 'mrmd-electron/src/services/runtime-service.js';
+} from './vendor/services/runtime-service.js';
 
 export {
   default as FileService,
-} from 'mrmd-electron/src/services/file-service.js';
+} from './vendor/services/file-service.js';
 
 export {
   default as AssetService,
-} from 'mrmd-electron/src/services/asset-service.js';
+} from './vendor/services/asset-service.js';
 
 export {
   default as SettingsService,
-} from 'mrmd-electron/src/services/settings-service.js';
+} from './vendor/services/settings-service.js';
 
 export {
   default as RuntimePreferencesService,
-} from 'mrmd-electron/src/services/runtime-preferences-service.js';
+} from './vendor/services/runtime-preferences-service.js';
 
 export {
   default as LanguageToolService,
-} from 'mrmd-electron/src/services/languagetool-service.js';
+} from './vendor/services/languagetool-service.js';
 
 export {
   default as LanguageToolPreferencesService,
-} from 'mrmd-electron/src/services/languagetool-preferences-service.js';
+} from './vendor/services/languagetool-preferences-service.js';

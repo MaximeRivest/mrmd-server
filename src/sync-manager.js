@@ -15,9 +15,9 @@ import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
 
-// Import utilities from mrmd-electron
-import { findFreePort, waitForPort, isProcessAlive } from 'mrmd-electron/src/utils/index.js';
-import { SYNC_SERVER_MEMORY_MB, DIR_HASH_LENGTH } from 'mrmd-electron/src/config.js';
+// Import utilities (vendored from mrmd-electron)
+import { findFreePort, waitForPort, isProcessAlive } from './vendor/utils/index.js';
+import { SYNC_SERVER_MEMORY_MB, DIR_HASH_LENGTH } from './vendor/config.js';
 
 // Relay bridge for cloud mode
 import { RelayBridge } from './relay-bridge.js';
