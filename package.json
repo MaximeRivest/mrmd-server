@@ -46,6 +46,7 @@
     "multer": "^1.4.5-lts.1",
     "chokidar": "^3.6.0",
     "fzf": "^0.5.2",
+    "mrmd-electron": "^0.5.4",
     "mrmd-project": "^0.1.2",
     "mrmd-sync": "^0.3.3"
   }
