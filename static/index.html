@@ -65,28 +65,27 @@
   </div>
 
   <script>
-    // Validate token and load the full UI
+    // Validate token (or no-auth mode) and load the full UI
     async function init() {
       const params = new URLSearchParams(window.location.search);
-      const token = params.get('token');
-
-      if (!token) {
-        showError('No token provided. Add ?token=YOUR_TOKEN to the URL.');
-        return;
-      }
+      const token = params.get('token') || '';
 
       try {
-        // Validate token
-        const response = await fetch(`/auth/validate?token=${encodeURIComponent(token)}`);
+        // Ask the server — it returns { valid: true } when --no-auth is set
+        const url = token
+          ? `/auth/validate?token=${encodeURIComponent(token)}`
+          : `/auth/validate`;
+        const response = await fetch(url);
         const result = await response.json();
 
         if (!result.valid) {
-          showError('Invalid token. Check your access URL.');
+          showError(token
+            ? 'Invalid token. Check your access URL.'
+            : 'No token provided. Add ?token=YOUR_TOKEN to the URL.');
           return;
         }
 
-        // Token is valid - load the full UI
-        // We'll redirect to the main app or load it inline
+        // Auth passed — load the full UI
         loadMainApp();
 
       } catch (err) {
